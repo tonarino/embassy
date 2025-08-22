@@ -1367,7 +1367,7 @@ fn on_pio_drop<PIO: Instance>() {
     }
 }
 
-trait SealedInstance {
+pub trait SealedInstance {
     const PIO_NO: u8;
     const PIO: &'static crate::pac::pio::Pio;
     const FUNCSEL: crate::pac::io::vals::Gpio0ctrlFuncsel;

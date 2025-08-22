@@ -162,6 +162,59 @@ fn copy_inner<'a, C: Channel>(
     Transfer::new(ch)
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum PioDmaPace {
+    Transmitter,
+    Receiver,
+}
+
+pub unsafe fn pio_to_pio_dma<'a, C: Channel, FROM_PIO: crate::pio::Instance, const FROM_SM: usize, TO_PIO: crate::pio::Instance, const TO_SM: usize>(
+    ch: Peri<'a, C>,
+    len: usize,
+    data_size: DataSize,
+    dma_pace: PioDmaPace,
+) -> Transfer<'a, C> {
+    let p = ch.regs();
+
+    p.read_addr().write_value(FROM_PIO::PIO.rxf(FROM_SM).as_ptr() as u32);
+    p.write_addr().write_value(TO_PIO::PIO.txf(TO_SM).as_ptr() as u32);
+
+    #[cfg(feature = "rp2040")]
+    p.trans_count().write(|w| {
+        *w = len as u32;
+    });
+    #[cfg(feature = "_rp235x")]
+    p.trans_count().write(|w| {
+        w.set_mode(0.into());
+        w.set_count(len as u32);
+    });
+
+    compiler_fence(Ordering::SeqCst);
+
+    let dreq = match dma_pace {
+        PioDmaPace::Transmitter => {
+            let pio_no = FROM_PIO::PIO_NO;
+            crate::pac::dma::vals::TreqSel::from(pio_no * 8 + FROM_SM as u8 + 4)
+        }
+        PioDmaPace::Receiver => {
+            let pio_no = TO_PIO::PIO_NO;
+            crate::pac::dma::vals::TreqSel::from(pio_no * 8 + TO_SM as u8)
+        }
+    };
+
+    p.ctrl_trig().write(|w| {
+        w.set_treq_sel(dreq);
+        w.set_data_size(data_size);
+        w.set_incr_read(false);
+        w.set_incr_write(false);
+        w.set_chain_to(ch.number());
+        w.set_en(true);
+    });
+
+    compiler_fence(Ordering::SeqCst);
+    Transfer::new(ch)
+}
+
 /// DMA transfer driver.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Transfer<'a, C: Channel> {
