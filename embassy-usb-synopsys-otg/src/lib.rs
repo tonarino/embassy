@@ -781,6 +781,9 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
 
         // Unmask global interrupt
         r.gahbcfg().write(|w| {
+            // TODO(goodhoko): make this conditional?
+            w.set_dmaen(true);
+
             w.set_gint(true); // unmask global interrupt
         });
 
@@ -884,11 +887,12 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
                     });
 
                     regs.doeptsiz(index).modify(|w| {
-                        w.set_xfrsiz(ep.max_packet_size as _);
                         if index == 0 {
+                            w.set_xfrsiz(ep.max_packet_size as _);
                             w.set_rxdpid_stupcnt(3);
                         } else {
-                            w.set_pktcnt(1);
+                            // w.set_pktcnt(1);
+                            // Expect the user to call read() where we'll set_xfrsiz and set_pktcnt.
                         }
                     });
                 });
@@ -1218,53 +1222,77 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
                 return Poll::Ready(Err(EndpointError::Disabled));
             }
 
-            let len = self.state.out_size.load(Ordering::Relaxed);
-            if len != EP_OUT_BUFFER_EMPTY {
-                trace!("read ep={:?} done len={}", self.info.addr, len);
+            // 1. Configure the packet count and transfer size to "enable" the EP
+            let packet_count = buf.len() as u32 / self.info.max_packet_size as u32;
+            self.regs.doeptsiz(index).modify(|w| {
+                w.set_xfrsiz(buf.len() as u32);
+                w.set_pktcnt(packet_count as u16);
+            });
 
-                if len as usize > buf.len() {
-                    return Poll::Ready(Err(EndpointError::BufferOverflow));
-                }
+            // 2. Setup DMA
+            assert_eq!(
+                buf.len() % 4,
+                0,
+                "buffer must be aligned to DMA word-size which is 4 bytes"
+            );
+            // Set the destination address of the DMA transfer.
+            self.regs.doepdma(index).write_value(buf.as_mut_ptr() as u32);
 
-                // SAFETY: exclusive access ensured by `out_size` atomic variable
-                let data = unsafe { core::slice::from_raw_parts(*self.state.out_buffer.get(), len as usize) };
-                buf[..len as usize].copy_from_slice(data);
+            // Enable the endpoint in case it was disabled.
+            self.regs.doepctl(index).modify(|w| {
+                w.set_cnak(true);
+                w.set_epena(true);
+            });
 
-                // Release buffer
-                self.state.out_size.store(EP_OUT_BUFFER_EMPTY, Ordering::Release);
+            Poll::Pending
 
-                critical_section::with(|_| {
-                    // Receive 1 packet
-                    self.regs.doeptsiz(index).modify(|w| {
-                        w.set_xfrsiz(self.info.max_packet_size as _);
-                        w.set_pktcnt(1);
-                    });
+            // let len = self.state.out_size.load(Ordering::Relaxed);
+            // if len != EP_OUT_BUFFER_EMPTY {
+            //     trace!("read ep={:?} done len={}", self.info.addr, len);
 
-                    if self.info.ep_type == EndpointType::Isochronous {
-                        // Isochronous endpoints must set the correct even/odd frame bit to
-                        // correspond with the next frame's number.
-                        let frame_number = self.regs.dsts().read().fnsof();
-                        let frame_is_odd = frame_number & 0x01 == 1;
+            //     if len as usize > buf.len() {
+            //         return Poll::Ready(Err(EndpointError::BufferOverflow));
+            //     }
 
-                        self.regs.doepctl(index).modify(|r| {
-                            if frame_is_odd {
-                                r.set_sd0pid_sevnfrm(true);
-                            } else {
-                                r.set_sd1pid_soddfrm(true);
-                            }
-                        });
-                    }
+            //     // SAFETY: exclusive access ensured by `out_size` atomic variable
+            //     let data = unsafe { core::slice::from_raw_parts(*self.state.out_buffer.get(), len as usize) };
+            //     buf[..len as usize].copy_from_slice(data);
 
-                    // Clear NAK to indicate we are ready to receive more data
-                    self.regs.doepctl(index).modify(|w| {
-                        w.set_cnak(true);
-                    });
-                });
+            //     // Release buffer
+            //     self.state.out_size.store(EP_OUT_BUFFER_EMPTY, Ordering::Release);
 
-                Poll::Ready(Ok(len as usize))
-            } else {
-                Poll::Pending
-            }
+            //     critical_section::with(|_| {
+            //         // Receive 1 packet
+            //         self.regs.doeptsiz(index).modify(|w| {
+            //             w.set_xfrsiz(self.info.max_packet_size as _);
+            //             w.set_pktcnt(1);
+            //         });
+
+            //         if self.info.ep_type == EndpointType::Isochronous {
+            //             // Isochronous endpoints must set the correct even/odd frame bit to
+            //             // correspond with the next frame's number.
+            //             let frame_number = self.regs.dsts().read().fnsof();
+            //             let frame_is_odd = frame_number & 0x01 == 1;
+
+            //             self.regs.doepctl(index).modify(|r| {
+            //                 if frame_is_odd {
+            //                     r.set_sd0pid_sevnfrm(true);
+            //                 } else {
+            //                     r.set_sd1pid_soddfrm(true);
+            //                 }
+            //             });
+            //         }
+
+            //         // Clear NAK to indicate we are ready to receive more data
+            //         self.regs.doepctl(index).modify(|w| {
+            //             w.set_cnak(true);
+            //         });
+            //     });
+
+            //     Poll::Ready(Ok(len as usize))
+            // } else {
+            //     Poll::Pending
+            // }
         })
         .await
     }
