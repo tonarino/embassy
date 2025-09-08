@@ -6,6 +6,8 @@
 // This must go FIRST so that all the other modules see its macros.
 mod fmt;
 
+use crate::regs::Grxsts;
+use crate::regs::Gintsts;
 use core::cell::UnsafeCell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
@@ -24,11 +26,131 @@ pub mod otg_v1;
 
 use otg_v1::{regs, vals, Otg};
 
+fn print_interrupts(ints: Gintsts) {
+    if ints.0 == 0 {
+        return;
+    }
+
+    info!("USB interrupts:");
+
+    if ints.mmis() {
+        info!("\tMode mismatch interrupt");
+    }
+
+    if ints.otgint() {
+        info!("\tOTG interrupt");
+    }
+
+    if ints.sof() {
+        info!("\tStart of frame interrupt");
+    }
+
+    if ints.rxflvl() {
+        info!("\tRxFIFO non-empty interrupt");
+    }
+
+    if ints.nptxfe() {
+        info!("\tNon-periodic TxFIFO empty interrupt");
+    }
+
+    if ints.ginakeff() {
+        info!("\tGlobal IN non-periodic NAK effective interrupt");
+    }
+
+    if ints.goutnakeff() {
+        info!("\tGlobal OUT NAK effective interrupt");
+    }
+
+    if ints.esusp() {
+        info!("\tEarly suspend interrupt");
+    }
+
+    if ints.usbsusp() {
+        info!("\tUSB suspend interrupt");
+    }
+
+    if ints.usbrst() {
+        info!("\tUSB reset interrupt");
+    }
+
+    if ints.enumdne() {
+        info!("\tEnumeration done interrupt");
+    }
+
+    if ints.isoodrp() {
+        info!("\tIsochronous OUT packet dropped interrupt");
+    }
+
+    if ints.eopf() {
+        info!("\tEnd of periodic frame interrupt");
+    }
+
+    if ints.iepint() {
+        info!("\tIN endpoint interrupt");
+    }
+
+    if ints.oepint() {
+        info!("\tOUT endpoint interrupt");
+    }
+
+    if ints.iisoixfr() {
+        info!("\tIncomplete isochronous IN transfer interrupt");
+    }
+
+    if ints.ipxfr_incompisoout() {
+        info!("\tIncomplete periodic transfer (host mode) / Incomplete isochronous OUT transfer (device mode)");
+    }
+
+    if ints.datafsusp() {
+        info!("\tData fetch suspended");
+    }
+
+    if ints.hprtint() {
+        info!("\tHost port interrupt");
+    }
+
+    if ints.hcint() {
+        info!("\tHost channels interrupt");
+    }
+
+    if ints.ptxfe() {
+        info!("\tPeriodic TxFIFO empty interrupt");
+    }
+
+    if ints.cidschg() {
+        info!("\tConnector ID status change interrupt");
+    }
+
+    if ints.discint() {
+        info!("\tDisconnect detected interrupt");
+    }
+
+    if ints.srqint() {
+        info!("\tSession request/new session detected interrupt");
+    }
+
+    if ints.wkupint() {
+        info!("\tResume/remote wakeup detected interrupt");
+    }
+}
+
+fn print_rx_status(status: Grxsts) {
+    info!("RX Status:");
+
+    info!("\tEndpoint number: {}", status.epnum());
+    info!("\tByte count: {}", status.bcnt());
+    info!("\tData packet ID: {}", status.dpid() as u8);
+    info!("\tPacket status: {}", status.pktstsd() as u8);
+    info!("\tFrame number: {}", status.frmnum());
+}
+
 /// Handle interrupts.
 pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_EP_COUNT>, ep_count: usize) {
     trace!("irq");
 
     let ints = r.gintsts().read();
+    print_interrupts(ints);
+
     if ints.wkupint() || ints.usbsusp() || ints.usbrst() || ints.enumdne() || ints.otgint() || ints.srqint() {
         // Mask interrupts and notify `Bus` to process them
         r.gintmsk().write(|w| {
@@ -42,7 +164,10 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
     // Handle RX
     while r.gintsts().read().rxflvl() {
         let status = r.grxstsp().read();
-        trace!("=== status {:08x}", status.0);
+
+        print_rx_status(status);
+
+        info!("=== status {:08x}", status.0);
         let ep_num = status.epnum() as usize;
         let len = status.bcnt() as usize;
 
@@ -50,7 +175,7 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
 
         match status.pktstsd() {
             vals::Pktstsd::SETUP_DATA_RX => {
-                trace!("SETUP_DATA_RX");
+                info!("SETUP_DATA_RX");
                 assert!(len == 8, "invalid SETUP packet length={}", len);
                 assert!(ep_num == 0, "invalid SETUP packet endpoint={}", ep_num);
 
@@ -66,9 +191,13 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
                 let data = &state.cp_state.setup_data;
                 data[0].store(r.fifo(0).read().data(), Ordering::Relaxed);
                 data[1].store(r.fifo(0).read().data(), Ordering::Relaxed);
+
+                info!("Got setup data:");
+                info!("{:032b}", data[0].load(Ordering::Relaxed));
+                info!("{:032b}", data[1].load(Ordering::Relaxed));
             }
             vals::Pktstsd::OUT_DATA_RX => {
-                trace!("OUT_DATA_RX ep={} len={}", ep_num, len);
+                info!("OUT_DATA_RX ep={} len={}", ep_num, len);
 
                 if state.ep_states[ep_num].out_size.load(Ordering::Acquire) == EP_OUT_BUFFER_EMPTY {
                     // SAFETY: Buffer size is allocated to be equal to endpoint's maximum packet size
@@ -104,9 +233,9 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
                 trace!("OUT_DATA_DONE ep={}", ep_num);
             }
             vals::Pktstsd::SETUP_DATA_DONE => {
-                trace!("SETUP_DATA_DONE ep={}", ep_num);
+                info!("SETUP_DATA_DONE ep={}", ep_num);
             }
-            x => trace!("unknown PKTSTS: {}", x.to_bits()),
+            x => info!("unknown PKTSTS: {}", x.to_bits()),
         }
     }
 
@@ -143,7 +272,7 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
 
     // out endpoint interrupt
     if ints.oepint() {
-        trace!("oepint");
+        info!("oepint");
         let mut ep_mask = r.daint().read().oepint();
         let mut ep_num = 0;
 
@@ -158,7 +287,7 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
                     state.cp_state.setup_ready.store(true, Ordering::Release);
                 }
                 state.ep_states[ep_num].out_waker.wake();
-                trace!("out ep={} irq val={:08x}", ep_num, ep_ints.0);
+                info!("out ep={} irq val={:08x}", ep_num, ep_ints.0);
             }
 
             ep_mask >>= 1;
@@ -1279,6 +1408,9 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
                 let mut data = [0; 8];
                 data[0..4].copy_from_slice(&self.setup_state.setup_data[0].load(Ordering::Relaxed).to_ne_bytes());
                 data[4..8].copy_from_slice(&self.setup_state.setup_data[1].load(Ordering::Relaxed).to_ne_bytes());
+
+                info!("Set data from setup_data!");
+
                 self.setup_state.setup_ready.store(false, Ordering::Release);
 
                 // EP0 should not be controlled by `Bus` so this RMW does not need a critical section
@@ -1291,10 +1423,10 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
                     .doepctl(self.ep_out.info.addr.index())
                     .modify(|w| w.set_cnak(true));
 
-                trace!("SETUP received: {:?}", Bytes(&data));
+                info!("SETUP received: {:?}", Bytes(&data));
                 Poll::Ready(data)
             } else {
-                trace!("SETUP waiting");
+                info!("SETUP waiting");
                 Poll::Pending
             }
         })
