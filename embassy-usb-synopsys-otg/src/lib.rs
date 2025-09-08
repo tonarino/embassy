@@ -163,6 +163,7 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
 
     // Handle RX
     while r.gintsts().read().rxflvl() {
+        // Pops the top data entry out of the Rx FIFO
         let status = r.grxstsp().read();
 
         print_rx_status(status);
@@ -784,6 +785,37 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
             // TODO(goodhoko): make this conditional?
             w.set_dmaen(true);
 
+            // 0000 Single: Bus transactions use single 32 bit accesses (not recommended)
+            // 0001 INCR: Bus transactions use unspecified length accesses (not recommended, uses the
+            // INCR AHB bus command)
+            // 0011 INCR4: Bus transactions target 4x 32 bit accesses
+            // 0101 INCR8: Bus transactions target 8x 32 bit accesses
+            // 0111 INCR16: Bus transactions based on 16x 32 bit accesses
+            // Others: Reserved
+            w.set_hbstlen(0b0000);
+
+            // The recommended value for
+            // RXTHRLEN is to be the same as the programmed AHB burst length (HBSTLEN bit in
+            // OTG_GAHBCFG).
+            // TODO(bschwind) - Maybe set RX Threshold Length here
+            //                  Also set RXTHREN to true
+            //                  Also set NONISOTHREN to true
+
+
+
+            // More info for endpoint 0:
+            //     Bit 15 STPKTRX: Setup packet received
+            // Applicable for control OUT endpoints in only in the Buffer DMA Mode. Set by the OTG_HS,
+            // this bit indicates that this buffer holds 8 bytes of setup data. There is only one setup packet
+            // per buffer. On receiving a setup packet, the OTG_HS closes the buffer and disables the
+            // corresponding endpoint after SETUP_COMPLETE status is seen in the Rx FIFO. OTG_HS
+            // puts a SETUP_COMPLETE status into the Rx FIFO when it sees the first IN or OUT token
+            // after the SETUP packet for that particular endpoint. The application must then re-enable the
+            // endpoint to receive any OUT data for the control transfer and reprogram the buffer start
+            // address. Because of the above behavior, OTG_HS can receive any number of back to back
+            // setup packets and one buffer for every setup packet is used.
+
+
             w.set_gint(true); // unmask global interrupt
         });
 
@@ -1208,17 +1240,17 @@ impl<'d> embassy_usb_driver::Endpoint for Endpoint<'d, Out> {
 }
 
 impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
-        trace!("read start len={}", buf.len());
+    async fn read_with_dma(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
+        trace!("DMA read start len={}", buf.len());
 
         poll_fn(|cx| {
             let index = self.info.addr.index();
             self.state.out_waker.register(cx.waker());
 
             let doepctl = self.regs.doepctl(index).read();
-            trace!("read ep={:?}: doepctl {:08x}", self.info.addr, doepctl.0,);
+            trace!("DMA read ep={:?}: doepctl {:08x}", self.info.addr, doepctl.0,);
             if !doepctl.usbaep() {
-                trace!("read ep={:?} error disabled", self.info.addr);
+                trace!("DMA read ep={:?} error disabled", self.info.addr);
                 return Poll::Ready(Err(EndpointError::Disabled));
             }
 
@@ -1293,6 +1325,71 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
             // } else {
             //     Poll::Pending
             // }
+        })
+        .await
+    }
+
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
+        trace!("read start len={}", buf.len());
+
+        poll_fn(|cx| {
+            let index = self.info.addr.index();
+            self.state.out_waker.register(cx.waker());
+
+            let doepctl = self.regs.doepctl(index).read();
+            trace!("read ep={:?}: doepctl {:08x}", self.info.addr, doepctl.0,);
+            if !doepctl.usbaep() {
+                trace!("read ep={:?} error disabled", self.info.addr);
+                return Poll::Ready(Err(EndpointError::Disabled));
+            }
+
+            let len = self.state.out_size.load(Ordering::Relaxed);
+            if len != EP_OUT_BUFFER_EMPTY {
+                trace!("read ep={:?} done len={}", self.info.addr, len);
+
+                if len as usize > buf.len() {
+                    return Poll::Ready(Err(EndpointError::BufferOverflow));
+                }
+
+                // SAFETY: exclusive access ensured by `out_size` atomic variable
+                let data = unsafe { core::slice::from_raw_parts(*self.state.out_buffer.get(), len as usize) };
+                buf[..len as usize].copy_from_slice(data);
+
+                // Release buffer
+                self.state.out_size.store(EP_OUT_BUFFER_EMPTY, Ordering::Release);
+
+                critical_section::with(|_| {
+                    // Receive 1 packet
+                    self.regs.doeptsiz(index).modify(|w| {
+                        w.set_xfrsiz(self.info.max_packet_size as _);
+                        w.set_pktcnt(1);
+                    });
+
+                    if self.info.ep_type == EndpointType::Isochronous {
+                        // Isochronous endpoints must set the correct even/odd frame bit to
+                        // correspond with the next frame's number.
+                        let frame_number = self.regs.dsts().read().fnsof();
+                        let frame_is_odd = frame_number & 0x01 == 1;
+
+                        self.regs.doepctl(index).modify(|r| {
+                            if frame_is_odd {
+                                r.set_sd0pid_sevnfrm(true);
+                            } else {
+                                r.set_sd1pid_soddfrm(true);
+                            }
+                        });
+                    }
+
+                    // Clear NAK to indicate we are ready to receive more data
+                    self.regs.doepctl(index).modify(|w| {
+                        w.set_cnak(true);
+                    });
+                });
+
+                Poll::Ready(Ok(len as usize))
+            } else {
+                Poll::Pending
+            }
         })
         .await
     }
