@@ -252,19 +252,6 @@ pub trait EndpointOut: Endpoint {
             }
         }
     }
-
-    /// Here are some docs
-    async fn read_with_dma(&mut self, _buf: &mut [u8]) -> Result<usize, EndpointError> {
-        // let mut n = 0;
-        // loop {
-        //     let i = self.read(&mut buf[n..]).await?;
-        //     n += i;
-        //     if i < self.info().max_packet_size as usize {
-        //         return Ok(n);
-        //     }
-        // }
-        Ok(0)
-    }
 }
 
 /// USB control pipe trait.
