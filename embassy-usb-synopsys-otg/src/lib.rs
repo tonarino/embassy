@@ -156,7 +156,7 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
         r.gintmsk().write(|w| {
             w.set_iepint(true);
             w.set_oepint(true);
-            w.set_rxflvlm(true);
+            // w.set_rxflvlm(true);
         });
         state.bus_waker.wake();
     }
@@ -281,10 +281,20 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
         while ep_mask != 0 {
             if ep_mask & 1 != 0 {
                 let ep_ints = r.doepint(ep_num).read();
+
                 // clear all
                 r.doepint(ep_num).write_value(ep_ints);
 
                 if ep_ints.stup() {
+                    // TODO - read the setup data here
+                    // let data = &state.cp_state.setup_data;
+                    // data[0].store(r.fifo(0).read().data(), Ordering::Relaxed);
+                    // data[1].store(r.fifo(0).read().data(), Ordering::Relaxed);
+
+                    let data = &state.cp_state.setup_data;
+                    data[0].store(state.cp_state.setup_buffer[0], Ordering::Relaxed);
+                    data[1].store(state.cp_state.setup_buffer[1], Ordering::Relaxed);
+
                     state.cp_state.setup_ready.store(true, Ordering::Release);
                 }
                 state.ep_states[ep_num].out_waker.wake();
@@ -362,6 +372,7 @@ unsafe impl Sync for EpState {}
 struct ControlPipeSetupState {
     /// Holds received SETUP packets. Available if [Ep0State::setup_ready] is true.
     setup_data: [AtomicU32; 2],
+    setup_buffer: [u32; 12],
     setup_ready: AtomicBool,
 }
 
@@ -381,6 +392,7 @@ impl<const EP_COUNT: usize> State<EP_COUNT> {
         Self {
             cp_state: ControlPipeSetupState {
                 setup_data: [const { AtomicU32::new(0) }; 2],
+                setup_buffer: [0; 12],
                 setup_ready: AtomicBool::new(false),
             },
             ep_states: [const {
@@ -659,7 +671,7 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
             w.set_wuim(true);
             w.set_iepint(true);
             w.set_oepint(true);
-            w.set_rxflvlm(true);
+            // w.set_rxflvlm(true);
             w.set_srqim(true);
             w.set_otgint(true);
         });
@@ -920,6 +932,21 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
 
                     regs.doeptsiz(index).modify(|w| {
                         if index == 0 {
+                            // C reference code:
+                            // USBx_OUTEP(0U)->DOEPTSIZ = 0U;
+                            // USBx_OUTEP(0U)->DOEPTSIZ |= (USB_OTG_DOEPTSIZ_PKTCNT & (1UL << 19));
+                            // USBx_OUTEP(0U)->DOEPTSIZ |= (3U * 8U);
+                            // USBx_OUTEP(0U)->DOEPTSIZ |=  USB_OTG_DOEPTSIZ_STUPCNT; // 3 setup packets
+
+                            // if (dma == 1U)
+                            // {
+                            //     USBx_OUTEP(0U)->DOEPDMA = (uint32_t)psetup;
+                            //     /* EP enable */
+                            //     USBx_OUTEP(0U)->DOEPCTL |= USB_OTG_DOEPCTL_EPENA | USB_OTG_DOEPCTL_USBAEP;
+                            // }
+
+                            w.set_pktcnt(1);
+                            // TODO - STM32 code sets this to 24...
                             w.set_xfrsiz(ep.max_packet_size as _);
                             w.set_rxdpid_stupcnt(3);
                         } else {
@@ -927,6 +954,17 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
                             // Expect the user to call read() where we'll set_xfrsiz and set_pktcnt.
                         }
                     });
+
+                    if index == 0 {
+                        // TODO(bschwind) - Self should probably be in `Pin<>` so that it doesn't move.
+                        regs.doepdma(index).write_value(self.instance.state.cp_state.setup_buffer.as_ptr() as u32);
+
+                        // Probably not needed, but enable the endpoint
+                        regs.doepctl(0).modify(|w| {
+                            w.set_usbaep(true);
+                            w.set_epena(true);
+                        })
+                    }
                 });
             }
         }
@@ -1112,6 +1150,8 @@ impl<'d, const MAX_EP_COUNT: usize> embassy_usb_driver::Bus for Bus<'d, MAX_EP_C
                         w.set_usbaep(enabled);
                     });
 
+                    // TODO(bschwind) - Do we need to flush the TX FIFO here at all?
+                    //                  Should we flush the RX FIFO?
                     // Flush tx fifo
                     regs.grstctl().write(|w| {
                         w.set_txfflsh(true);
@@ -1240,7 +1280,7 @@ impl<'d> embassy_usb_driver::Endpoint for Endpoint<'d, Out> {
 }
 
 impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
-    async fn read_with_dma(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
         trace!("DMA read start len={}", buf.len());
 
         poll_fn(|cx| {
@@ -1329,70 +1369,70 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
         .await
     }
 
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
-        trace!("read start len={}", buf.len());
+    // async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
+    //     trace!("read start len={}", buf.len());
 
-        poll_fn(|cx| {
-            let index = self.info.addr.index();
-            self.state.out_waker.register(cx.waker());
+    //     poll_fn(|cx| {
+    //         let index = self.info.addr.index();
+    //         self.state.out_waker.register(cx.waker());
 
-            let doepctl = self.regs.doepctl(index).read();
-            trace!("read ep={:?}: doepctl {:08x}", self.info.addr, doepctl.0,);
-            if !doepctl.usbaep() {
-                trace!("read ep={:?} error disabled", self.info.addr);
-                return Poll::Ready(Err(EndpointError::Disabled));
-            }
+    //         let doepctl = self.regs.doepctl(index).read();
+    //         trace!("read ep={:?}: doepctl {:08x}", self.info.addr, doepctl.0,);
+    //         if !doepctl.usbaep() {
+    //             trace!("read ep={:?} error disabled", self.info.addr);
+    //             return Poll::Ready(Err(EndpointError::Disabled));
+    //         }
 
-            let len = self.state.out_size.load(Ordering::Relaxed);
-            if len != EP_OUT_BUFFER_EMPTY {
-                trace!("read ep={:?} done len={}", self.info.addr, len);
+    //         let len = self.state.out_size.load(Ordering::Relaxed);
+    //         if len != EP_OUT_BUFFER_EMPTY {
+    //             trace!("read ep={:?} done len={}", self.info.addr, len);
 
-                if len as usize > buf.len() {
-                    return Poll::Ready(Err(EndpointError::BufferOverflow));
-                }
+    //             if len as usize > buf.len() {
+    //                 return Poll::Ready(Err(EndpointError::BufferOverflow));
+    //             }
 
-                // SAFETY: exclusive access ensured by `out_size` atomic variable
-                let data = unsafe { core::slice::from_raw_parts(*self.state.out_buffer.get(), len as usize) };
-                buf[..len as usize].copy_from_slice(data);
+    //             // SAFETY: exclusive access ensured by `out_size` atomic variable
+    //             let data = unsafe { core::slice::from_raw_parts(*self.state.out_buffer.get(), len as usize) };
+    //             buf[..len as usize].copy_from_slice(data);
 
-                // Release buffer
-                self.state.out_size.store(EP_OUT_BUFFER_EMPTY, Ordering::Release);
+    //             // Release buffer
+    //             self.state.out_size.store(EP_OUT_BUFFER_EMPTY, Ordering::Release);
 
-                critical_section::with(|_| {
-                    // Receive 1 packet
-                    self.regs.doeptsiz(index).modify(|w| {
-                        w.set_xfrsiz(self.info.max_packet_size as _);
-                        w.set_pktcnt(1);
-                    });
+    //             critical_section::with(|_| {
+    //                 // Receive 1 packet
+    //                 self.regs.doeptsiz(index).modify(|w| {
+    //                     w.set_xfrsiz(self.info.max_packet_size as _);
+    //                     w.set_pktcnt(1);
+    //                 });
 
-                    if self.info.ep_type == EndpointType::Isochronous {
-                        // Isochronous endpoints must set the correct even/odd frame bit to
-                        // correspond with the next frame's number.
-                        let frame_number = self.regs.dsts().read().fnsof();
-                        let frame_is_odd = frame_number & 0x01 == 1;
+    //                 if self.info.ep_type == EndpointType::Isochronous {
+    //                     // Isochronous endpoints must set the correct even/odd frame bit to
+    //                     // correspond with the next frame's number.
+    //                     let frame_number = self.regs.dsts().read().fnsof();
+    //                     let frame_is_odd = frame_number & 0x01 == 1;
 
-                        self.regs.doepctl(index).modify(|r| {
-                            if frame_is_odd {
-                                r.set_sd0pid_sevnfrm(true);
-                            } else {
-                                r.set_sd1pid_soddfrm(true);
-                            }
-                        });
-                    }
+    //                     self.regs.doepctl(index).modify(|r| {
+    //                         if frame_is_odd {
+    //                             r.set_sd0pid_sevnfrm(true);
+    //                         } else {
+    //                             r.set_sd1pid_soddfrm(true);
+    //                         }
+    //                     });
+    //                 }
 
-                    // Clear NAK to indicate we are ready to receive more data
-                    self.regs.doepctl(index).modify(|w| {
-                        w.set_cnak(true);
-                    });
-                });
+    //                 // Clear NAK to indicate we are ready to receive more data
+    //                 self.regs.doepctl(index).modify(|w| {
+    //                     w.set_cnak(true);
+    //                 });
+    //             });
 
-                Poll::Ready(Ok(len as usize))
-            } else {
-                Poll::Pending
-            }
-        })
-        .await
-    }
+    //             Poll::Ready(Ok(len as usize))
+    //         } else {
+    //             Poll::Pending
+    //         }
+    //     })
+    //     .await
+    // }
 }
 
 impl<'d> embassy_usb_driver::EndpointIn for Endpoint<'d, In> {
