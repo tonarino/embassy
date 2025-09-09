@@ -375,10 +375,20 @@ impl Otg {
         assert!(n < 16usize);
         unsafe { Reg::from_ptr(self.ptr.add(0x0b10usize + n * 32usize) as _) }
     }
-    #[doc = "Device OUT/IN endpoint DMA address register"]
+
+    // Address offset: 0x914 + 0x20 * x, (x = 0 to 8)
+    #[doc = "Device IN endpoint DMA address register"]
+    #[inline(always)]
+    pub fn diepdma(self, n: usize) -> Reg<u32, RW> {
+        assert!(n < 8usize);
+        unsafe { Reg::from_ptr(self.ptr.add(0x0914usize + n * 32usize) as _) }
+    }
+
+
+    #[doc = "Device OUT endpoint DMA address register"]
     #[inline(always)]
     pub fn doepdma(self, n: usize) -> Reg<u32, RW> {
-        assert!(n < 16usize);
+        assert!(n < 8usize);
         unsafe { Reg::from_ptr(self.ptr.add(0x0b14usize + n * 32usize) as _) }
     }
     #[doc = "Power and clock gating control register"]

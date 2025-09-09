@@ -6,6 +6,8 @@
 // This must go FIRST so that all the other modules see its macros.
 mod fmt;
 
+use crate::regs::Diepint;
+use crate::regs::Doepint;
 use crate::regs::Grxsts;
 use crate::regs::Gintsts;
 use core::cell::UnsafeCell;
@@ -144,6 +146,27 @@ fn print_rx_status(status: Grxsts) {
     info!("\tFrame number: {}", status.frmnum());
 }
 
+fn print_doepint(reg: Doepint) {
+    info!("Doepint Status:");
+
+    info!("\tTransfer Complete: {}", reg.xfrc());
+    info!("\tEndpoint Disabled: {}", reg.epdisd());
+    info!("\tSetup: {}", reg.stup());
+    info!("\tOUT token received when endpoint disabled: {}", reg.otepdis());
+    info!("\tBack to back setup: {}", reg.b2bstup());
+}
+
+fn print_diepint(reg: Diepint) {
+    info!("Diepint Status:");
+
+    info!("\tTransfer Complete: {}", reg.xfrc());
+    info!("\tEndpoint Disabled: {}", reg.epdisd());
+    info!("\tTimeout condition: {}", reg.toc());
+    info!("\tIN token received when Tx FIFO is empty: {}", reg.ittxfe());
+    info!("\tIN endpoint NAK effective: {}", reg.inepne());
+    info!("\tTX FIFO empty: {}", reg.txfe());
+}
+
 /// Handle interrupts.
 pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_EP_COUNT>, ep_count: usize) {
     trace!("irq");
@@ -162,7 +185,7 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
     }
 
     // Handle RX
-    while r.gintsts().read().rxflvl() {
+    while false { //r.gintsts().read().rxflvl() && !r.gintmsk().read().rxflvlm() {
         // Pops the top data entry out of the Rx FIFO
         let status = r.grxstsp().read();
 
@@ -250,6 +273,8 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
             if ep_mask & 1 != 0 {
                 let ep_ints = r.diepint(ep_num).read();
 
+                print_diepint(ep_ints);
+
                 // clear all
                 r.diepint(ep_num).write_value(ep_ints);
 
@@ -260,6 +285,11 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
                             w.set_ineptxfem(w.ineptxfem() & !(1 << ep_num));
                         });
                     });
+                }
+
+                if ep_ints.xfrc() {
+                    trace!("in ep={} transfer complete", ep_num);
+                    state.ep_states[ep_num].in_transfer_done.store(true, Ordering::Relaxed);
                 }
 
                 state.ep_states[ep_num].in_waker.wake();
@@ -282,6 +312,8 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
             if ep_mask & 1 != 0 {
                 let ep_ints = r.doepint(ep_num).read();
 
+                print_doepint(ep_ints);
+
                 // clear all
                 r.doepint(ep_num).write_value(ep_ints);
 
@@ -295,8 +327,15 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
                     data[0].store(state.cp_state.setup_buffer[0], Ordering::Relaxed);
                     data[1].store(state.cp_state.setup_buffer[1], Ordering::Relaxed);
 
+                    // TODO - reset the DMA address for endpoint 0
+                    assert!(ep_num == 0);
+
+                    // Reset the DMA address for our setup buffer
+                    r.doepdma(ep_num).write_value(state.cp_state.setup_buffer.as_ptr() as u32);
+
                     state.cp_state.setup_ready.store(true, Ordering::Release);
                 }
+
                 state.ep_states[ep_num].out_waker.wake();
                 info!("out ep={} irq val={:08x}", ep_num, ep_ints.0);
             }
@@ -361,6 +400,8 @@ struct EpState {
     /// Buffers are ready when associated [State::ep_out_size] != [EP_OUT_BUFFER_EMPTY].
     out_buffer: UnsafeCell<*mut u8>,
     out_size: AtomicU16,
+    in_transfer_done: AtomicBool,
+    out_transfer_done: AtomicBool,
 }
 
 // SAFETY: The EndpointAllocator ensures that the buffer points to valid memory exclusive for each endpoint and is
@@ -401,6 +442,8 @@ impl<const EP_COUNT: usize> State<EP_COUNT> {
                     out_waker: AtomicWaker::new(),
                     out_buffer: UnsafeCell::new(0 as _),
                     out_size: AtomicU16::new(EP_OUT_BUFFER_EMPTY),
+                    in_transfer_done: AtomicBool::new(false),
+                    out_transfer_done: AtomicBool::new(false),
                 }
             }; EP_COUNT],
             bus_waker: AtomicWaker::new(),
@@ -778,14 +821,32 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
             }
         });
 
+        // USBx_DEVICE->DIEPMSK |= USB_OTG_DIEPMSK_TOM |
+        //                                                 USB_OTG_DIEPMSK_XFRCM |
+        //                                                 USB_OTG_DIEPMSK_EPDM;
+
         // Unmask transfer complete EP interrupt
         r.diepmsk().write(|w| {
             w.set_xfrcm(true);
+            w.set_tom(true);
+            w.set_epdm(true);
         });
+
+
+
+        // USBx_DEVICE->DOEPMSK |= USB_OTG_DOEPMSK_STUPM |
+        //                                                 USB_OTG_DOEPMSK_XFRCM |
+        //                                                 USB_OTG_DOEPMSK_EPDM |
+        //                                                 USB_OTG_DOEPMSK_OTEPSPRM |
+        //                                                 USB_OTG_DOEPMSK_NAKM;
+
 
         // Unmask SETUP received EP interrupt
         r.doepmsk().write(|w| {
+            // TODO - there are some bits missing in the embassy-stm32 PAC
             w.set_stupm(true);
+            w.set_xfrcm(true);
+            w.set_epdm(true);
         });
 
         // Unmask and clear core interrupts
@@ -804,7 +865,7 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
             // 0101 INCR8: Bus transactions target 8x 32 bit accesses
             // 0111 INCR16: Bus transactions based on 16x 32 bit accesses
             // Others: Reserved
-            w.set_hbstlen(0b0000);
+            w.set_hbstlen(0b0011);
 
             // The recommended value for
             // RXTHRLEN is to be the same as the programmed AHB burst length (HBSTLEN bit in
@@ -832,7 +893,9 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
         });
 
         // Connect
-        r.dctl().write(|w| w.set_sdis(false));
+        r.dctl().write(|w| {
+            w.set_sdis(false)
+        });
     }
 
     fn init_fifo(&mut self) {
@@ -947,7 +1010,8 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
 
                             w.set_pktcnt(1);
                             // TODO - STM32 code sets this to 24...
-                            w.set_xfrsiz(ep.max_packet_size as _);
+                            // w.set_xfrsiz(ep.max_packet_size as _);
+                            w.set_xfrsiz(24);
                             w.set_rxdpid_stupcnt(3);
                         } else {
                             // w.set_pktcnt(1);
@@ -1052,9 +1116,27 @@ impl<'d, const MAX_EP_COUNT: usize> embassy_usb_driver::Bus for Bus<'d, MAX_EP_C
                 trace!("  speed={} trdt={}", speed.to_bits(), trdt);
                 regs.gusbcfg().modify(|w| w.set_trdt(trdt));
 
+                // Set the MPS of the IN EP0 to 64 bytes
+                regs.diepctl(0).modify(|w| {
+                    w.set_mpsiz(ep0_mpsiz(64));
+                });
+
+                // OTG_DOEPCTL0
+                // For USB OTG_HS in DMA mode, program the OTG_DOEPCTL0 register to enable
+                // control OUT endpoint 0, to receive a SETUP packet.
+                regs.doepctl(0).modify(|w| {
+                    w.set_cnak(true);
+                    w.set_epena(true);
+                });
+
+                regs.dctl().write(|w| {
+                    w.set_cginak(true);
+                });
+
                 regs.gintsts().write(|w| w.set_enumdne(true)); // clear
                 self.restore_irqs();
 
+                // TODO - why do we return a Reset Event here?
                 return Poll::Ready(Event::Reset);
             }
 
@@ -1318,6 +1400,13 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
 
             Poll::Pending
 
+            // TODO - set the dma address depending on if it's control 0 endpoint, or another endpoint
+            //        make the Future progress by checking some AtomicBool on the state, or a register
+
+
+
+
+
             // let len = self.state.out_size.load(Ordering::Relaxed);
             // if len != EP_OUT_BUFFER_EMPTY {
             //     trace!("read ep={:?} done len={}", self.info.addr, len);
@@ -1522,28 +1611,46 @@ impl<'d> embassy_usb_driver::EndpointIn for Endpoint<'d, In> {
                 });
             }
 
+            // Set the DMA address here
+            self.regs.diepdma(index).write_value(buf.as_ptr() as u32);
+
             // Enable endpoint
             self.regs.diepctl(index).modify(|w| {
                 w.set_cnak(true);
                 w.set_epena(true);
             });
 
-            // Write data to FIFO
-            let fifo = self.regs.fifo(index);
-            let mut chunks = buf.chunks_exact(4);
-            for chunk in &mut chunks {
-                let val = u32::from_ne_bytes(chunk.try_into().unwrap());
-                fifo.write_value(regs::Fifo(val));
-            }
-            // Write any last chunk
-            let rem = chunks.remainder();
-            if !rem.is_empty() {
-                let mut tmp = [0u8; 4];
-                tmp[0..rem.len()].copy_from_slice(rem);
-                let tmp = u32::from_ne_bytes(tmp);
-                fifo.write_value(regs::Fifo(tmp));
-            }
+            // // Write data to FIFO
+            // let fifo = self.regs.fifo(index);
+            // let mut chunks = buf.chunks_exact(4);
+            // for chunk in &mut chunks {
+            //     let val = u32::from_ne_bytes(chunk.try_into().unwrap());
+            //     fifo.write_value(regs::Fifo(val));
+            // }
+            // // Write any last chunk
+            // let rem = chunks.remainder();
+            // if !rem.is_empty() {
+            //     let mut tmp = [0u8; 4];
+            //     tmp[0..rem.len()].copy_from_slice(rem);
+            //     let tmp = u32::from_ne_bytes(tmp);
+            //     fifo.write_value(regs::Fifo(tmp));
+            // }
         });
+
+        // TODO(bschwind) - use poll_fn here, register the state's waker, and don't return
+        //                  until the DMA transfer is done.
+
+        poll_fn(|cx| {
+            self.state.in_waker.register(cx.waker());
+
+            if self.state.in_transfer_done.load(Ordering::Acquire) {
+                self.state.in_transfer_done.store(false, Ordering::Relaxed);
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
 
         trace!("write done ep={:?}", self.info.addr);
 
@@ -1584,9 +1691,12 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
                 });
 
                 // Clear NAK to indicate we are ready to receive more data
-                self.regs
-                    .doepctl(self.ep_out.info.addr.index())
-                    .modify(|w| w.set_cnak(true));
+                // Re-enable the control 0 endpoint
+                self.regs.doepctl(self.ep_out.info.addr.index()).modify(|w| {
+                    w.set_cnak(true);
+                    w.set_usbaep(true);
+                    w.set_epena(true);
+                });
 
                 info!("SETUP received: {:?}", Bytes(&data));
                 Poll::Ready(data)
