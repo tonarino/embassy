@@ -384,7 +384,6 @@ impl Otg {
         unsafe { Reg::from_ptr(self.ptr.add(0x0914usize + n * 32usize) as _) }
     }
 
-
     #[doc = "Device OUT endpoint DMA address register"]
     #[inline(always)]
     pub fn doepdma(self, n: usize) -> Reg<u32, RW> {
@@ -1234,6 +1233,13 @@ pub mod regs {
     #[derive(Copy, Clone, Eq, PartialEq)]
     pub struct Doepint(pub u32);
     impl Doepint {
+        #[doc = "Setup Packet Received"]
+        #[inline(always)]
+        pub const fn stpktrx(&self) -> bool {
+            let val = (self.0 >> 15usize) & 0x01;
+            val != 0
+        }
+
         #[doc = "XFRC"]
         #[inline(always)]
         pub const fn xfrc(&self) -> bool {

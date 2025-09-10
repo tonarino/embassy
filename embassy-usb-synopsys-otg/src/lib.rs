@@ -150,22 +150,47 @@ fn print_rx_status(status: Grxsts) {
 fn print_doepint(reg: Doepint) {
     info!("Doepint Status:");
 
-    info!("\tTransfer Complete: {}", reg.xfrc());
-    info!("\tEndpoint Disabled: {}", reg.epdisd());
-    info!("\tSetup: {}", reg.stup());
-    info!("\tOUT token received when endpoint disabled: {}", reg.otepdis());
-    info!("\tBack to back setup: {}", reg.b2bstup());
+    if reg.xfrc() {
+        info!("\tTransfer Complete");
+    }
+    if reg.epdisd() {
+        info!("\tEndpoint Disabled");
+    }
+    if reg.stup() {
+        info!("\tSetup");
+    }
+    if reg.otepdis() {
+        info!("\tOUT token received when endpoint disabled");
+    }
+    if reg.b2bstup() {
+        info!("\tBack to back setup");
+    }
+    if reg.stpktrx() {
+        info!("\tSetup Packet Received  ");
+    }
 }
 
 fn print_diepint(reg: Diepint) {
     info!("Diepint Status:");
 
-    info!("\tTransfer Complete: {}", reg.xfrc());
-    info!("\tEndpoint Disabled: {}", reg.epdisd());
-    info!("\tTimeout condition: {}", reg.toc());
-    info!("\tIN token received when Tx FIFO is empty: {}", reg.ittxfe());
-    info!("\tIN endpoint NAK effective: {}", reg.inepne());
-    info!("\tTX FIFO empty: {}", reg.txfe());
+    if reg.xfrc() {
+        info!("\tTransfer Complete");
+    }
+    if reg.epdisd() {
+        info!("\tEndpoint Disabled");
+    }
+    if reg.toc() {
+        info!("\tTimeout condition");
+    }
+    if reg.ittxfe() {
+        info!("\tIN token received when Tx FIFO is empty");
+    }
+    if reg.inepne() {
+        info!("\tIN endpoint NAK effective");
+    }
+    if reg.txfe() {
+        info!("\tTX FIFO empty");
+    }
 }
 
 /// Handle interrupts.
@@ -367,6 +392,8 @@ unsafe impl Sync for EpState {}
 
 struct ControlPipeSetupState {
     /// Holds received SETUP packets. Available if [Ep0State::setup_ready] is true.
+    //TODO(goodhoko): we DMA to setup_buffer and then copy to setup_data only to read it from there and return from `setup()`
+    // Get rid of setup_data and read and return direcrtly from setup_buffer.
     setup_data: [AtomicU32; 2],
     setup_buffer: [u32; 12],
     awaiting_setup_packet: AtomicBool,
@@ -1433,6 +1460,7 @@ impl<'d> embassy_usb_driver::EndpointIn for Endpoint<'d, In> {
             // Set the DMA address here
             self.regs.diepdma(index).write_value(buf.as_ptr() as u32);
 
+            self.state.in_transfer_done.store(false, Ordering::Relaxed);
             // Enable endpoint
             self.regs.diepctl(index).modify(|w| {
                 w.set_cnak(true);
@@ -1444,7 +1472,6 @@ impl<'d> embassy_usb_driver::EndpointIn for Endpoint<'d, In> {
             self.state.in_waker.register(cx.waker());
 
             if self.state.in_transfer_done.load(Ordering::Acquire) {
-                self.state.in_transfer_done.store(false, Ordering::Relaxed);
                 Poll::Ready(())
             } else {
                 Poll::Pending
@@ -1473,7 +1500,19 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
     }
 
     async fn setup(&mut self) -> [u8; 8] {
+        // Clear NAK to indicate we are ready to receive more data
+        // Re-enable the control 0 endpoint
+
+        self.regs
+            .doepdma(self.ep_out.info.addr.index())
+            .write_value(self.setup_state.setup_buffer.as_ptr() as u32);
+
         self.setup_state.awaiting_setup_packet.store(true, Ordering::Release);
+        self.regs.doepctl(self.ep_out.info.addr.index()).modify(|w| {
+            w.set_cnak(true);
+            w.set_usbaep(true);
+            w.set_epena(true);
+        });
 
         poll_fn(|cx| {
             self.ep_out.state.out_waker.register(cx.waker());
@@ -1488,14 +1527,6 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
                 // EP0 should not be controlled by `Bus` so this RMW does not need a critical section
                 self.regs.doeptsiz(self.ep_out.info.addr.index()).modify(|w| {
                     w.set_rxdpid_stupcnt(3);
-                });
-
-                // Clear NAK to indicate we are ready to receive more data
-                // Re-enable the control 0 endpoint
-                self.regs.doepctl(self.ep_out.info.addr.index()).modify(|w| {
-                    w.set_cnak(true);
-                    w.set_usbaep(true);
-                    w.set_epena(true);
                 });
 
                 info!("SETUP received: {:?}", Bytes(&data));
