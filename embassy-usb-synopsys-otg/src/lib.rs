@@ -13,6 +13,7 @@ use crate::regs::Grxsts;
 use core::cell::UnsafeCell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
+use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use core::task::Poll;
 
@@ -289,6 +290,13 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
                 }
 
                 if ep_ints.xfrc() {
+                    if state.ep_states[ep_num].in_transfer_done.load(Ordering::Acquire) {
+                        error!(
+                            "got transfer complete inerrupt on IN ep#{} but no transfer is setup",
+                            ep_num
+                        )
+                    }
+
                     trace!("in ep={} transfer complete", ep_num);
                     state.ep_states[ep_num].in_transfer_done.store(true, Ordering::Relaxed);
                 }
@@ -336,6 +344,23 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
                         .write_value(state.cp_state.setup_buffer.as_ptr() as u32);
 
                     state.cp_state.setup_ready.store(true, Ordering::Release);
+                }
+
+                if ep_ints.xfrc() {
+                    if state.ep_states[ep_num].out_transfer_done.load(Ordering::Acquire) {
+                        error!(
+                            "got transfer complete inerrupt on OUT ep#{} but no transfer is setup",
+                            ep_num
+                        )
+                    }
+                    state.ep_states[ep_num].out_transfer_done.store(true, Ordering::Relaxed);
+
+                    let bytes_read = r.doeptsiz(ep_num).read().xfrsiz();
+                    state.ep_states[ep_num]
+                        .out_transfered_bytes
+                        .store(bytes_read as usize, Ordering::Relaxed);
+
+                    trace!("out ep={} transfer complete, {} bytes read", ep_num, bytes_read);
                 }
 
                 state.ep_states[ep_num].out_waker.wake();
@@ -404,6 +429,7 @@ struct EpState {
     out_size: AtomicU16,
     in_transfer_done: AtomicBool,
     out_transfer_done: AtomicBool,
+    out_transfered_bytes: AtomicUsize,
 }
 
 // SAFETY: The EndpointAllocator ensures that the buffer points to valid memory exclusive for each endpoint and is
@@ -446,6 +472,7 @@ impl<const EP_COUNT: usize> State<EP_COUNT> {
                     out_size: AtomicU16::new(EP_OUT_BUFFER_EMPTY),
                     in_transfer_done: AtomicBool::new(false),
                     out_transfer_done: AtomicBool::new(false),
+                    out_transfered_bytes: AtomicUsize::new(0),
                 }
             }; EP_COUNT],
             bus_waker: AtomicWaker::new(),
@@ -1360,159 +1387,53 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
         trace!("DMA read start len={}", buf.len());
 
+        let index = self.info.addr.index();
+
+        let doepctl = self.regs.doepctl(index).read();
+        trace!("DMA read ep={:?}: doepctl {:08x}", self.info.addr, doepctl.0,);
+        if !doepctl.usbaep() {
+            trace!("DMA read ep={:?} error disabled", self.info.addr);
+            return Err(EndpointError::Disabled);
+        }
+
+        // 1. Configure the packet count and transfer size to "enable" the EP
+        let packet_count = (buf.len() as u32).div_ceil(self.info.max_packet_size as u32);
+        self.regs.doeptsiz(index).modify(|w| {
+            w.set_xfrsiz(buf.len() as u32);
+            w.set_pktcnt(packet_count as u16);
+        });
+
+        // 2. Setup DMA
+        assert_eq!(
+            buf.len() % 4,
+            0,
+            "buffer must be aligned to DMA word-size which is 4 bytes"
+        );
+        // Set the destination address of the DMA transfer.
+        self.regs.doepdma(index).write_value(buf.as_mut_ptr() as u32);
+
+        // Enable the endpoint in case it was disabled.
+        self.regs.doepctl(index).modify(|w| {
+            w.set_cnak(true);
+            w.set_epena(true);
+        });
+
         poll_fn(|cx| {
-            let index = self.info.addr.index();
             self.state.out_waker.register(cx.waker());
 
-            let doepctl = self.regs.doepctl(index).read();
-            trace!("DMA read ep={:?}: doepctl {:08x}", self.info.addr, doepctl.0,);
-            if !doepctl.usbaep() {
-                trace!("DMA read ep={:?} error disabled", self.info.addr);
-                return Poll::Ready(Err(EndpointError::Disabled));
+            if self.state.out_transfer_done.load(Ordering::Acquire) {
+                self.state.out_transfer_done.store(false, Ordering::Relaxed);
+
+                let bytes_read = self.state.out_transfered_bytes.load(Ordering::Acquire);
+                self.state.out_transfered_bytes.store(0, Ordering::Relaxed);
+
+                return Poll::Ready(Ok(bytes_read));
+            } else {
+                Poll::Pending
             }
-
-            // 1. Configure the packet count and transfer size to "enable" the EP
-            let packet_count = buf.len() as u32 / self.info.max_packet_size as u32;
-            self.regs.doeptsiz(index).modify(|w| {
-                w.set_xfrsiz(buf.len() as u32);
-                w.set_pktcnt(packet_count as u16);
-            });
-
-            // 2. Setup DMA
-            assert_eq!(
-                buf.len() % 4,
-                0,
-                "buffer must be aligned to DMA word-size which is 4 bytes"
-            );
-            // Set the destination address of the DMA transfer.
-            self.regs.doepdma(index).write_value(buf.as_mut_ptr() as u32);
-
-            // Enable the endpoint in case it was disabled.
-            self.regs.doepctl(index).modify(|w| {
-                w.set_cnak(true);
-                w.set_epena(true);
-            });
-
-            Poll::Pending
-
-            // TODO - set the dma address depending on if it's control 0 endpoint, or another endpoint
-            //        make the Future progress by checking some AtomicBool on the state, or a register
-
-            // let len = self.state.out_size.load(Ordering::Relaxed);
-            // if len != EP_OUT_BUFFER_EMPTY {
-            //     trace!("read ep={:?} done len={}", self.info.addr, len);
-
-            //     if len as usize > buf.len() {
-            //         return Poll::Ready(Err(EndpointError::BufferOverflow));
-            //     }
-
-            //     // SAFETY: exclusive access ensured by `out_size` atomic variable
-            //     let data = unsafe { core::slice::from_raw_parts(*self.state.out_buffer.get(), len as usize) };
-            //     buf[..len as usize].copy_from_slice(data);
-
-            //     // Release buffer
-            //     self.state.out_size.store(EP_OUT_BUFFER_EMPTY, Ordering::Release);
-
-            //     critical_section::with(|_| {
-            //         // Receive 1 packet
-            //         self.regs.doeptsiz(index).modify(|w| {
-            //             w.set_xfrsiz(self.info.max_packet_size as _);
-            //             w.set_pktcnt(1);
-            //         });
-
-            //         if self.info.ep_type == EndpointType::Isochronous {
-            //             // Isochronous endpoints must set the correct even/odd frame bit to
-            //             // correspond with the next frame's number.
-            //             let frame_number = self.regs.dsts().read().fnsof();
-            //             let frame_is_odd = frame_number & 0x01 == 1;
-
-            //             self.regs.doepctl(index).modify(|r| {
-            //                 if frame_is_odd {
-            //                     r.set_sd0pid_sevnfrm(true);
-            //                 } else {
-            //                     r.set_sd1pid_soddfrm(true);
-            //                 }
-            //             });
-            //         }
-
-            //         // Clear NAK to indicate we are ready to receive more data
-            //         self.regs.doepctl(index).modify(|w| {
-            //             w.set_cnak(true);
-            //         });
-            //     });
-
-            //     Poll::Ready(Ok(len as usize))
-            // } else {
-            //     Poll::Pending
-            // }
         })
         .await
     }
-
-    // async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
-    //     trace!("read start len={}", buf.len());
-
-    //     poll_fn(|cx| {
-    //         let index = self.info.addr.index();
-    //         self.state.out_waker.register(cx.waker());
-
-    //         let doepctl = self.regs.doepctl(index).read();
-    //         trace!("read ep={:?}: doepctl {:08x}", self.info.addr, doepctl.0,);
-    //         if !doepctl.usbaep() {
-    //             trace!("read ep={:?} error disabled", self.info.addr);
-    //             return Poll::Ready(Err(EndpointError::Disabled));
-    //         }
-
-    //         let len = self.state.out_size.load(Ordering::Relaxed);
-    //         if len != EP_OUT_BUFFER_EMPTY {
-    //             trace!("read ep={:?} done len={}", self.info.addr, len);
-
-    //             if len as usize > buf.len() {
-    //                 return Poll::Ready(Err(EndpointError::BufferOverflow));
-    //             }
-
-    //             // SAFETY: exclusive access ensured by `out_size` atomic variable
-    //             let data = unsafe { core::slice::from_raw_parts(*self.state.out_buffer.get(), len as usize) };
-    //             buf[..len as usize].copy_from_slice(data);
-
-    //             // Release buffer
-    //             self.state.out_size.store(EP_OUT_BUFFER_EMPTY, Ordering::Release);
-
-    //             critical_section::with(|_| {
-    //                 // Receive 1 packet
-    //                 self.regs.doeptsiz(index).modify(|w| {
-    //                     w.set_xfrsiz(self.info.max_packet_size as _);
-    //                     w.set_pktcnt(1);
-    //                 });
-
-    //                 if self.info.ep_type == EndpointType::Isochronous {
-    //                     // Isochronous endpoints must set the correct even/odd frame bit to
-    //                     // correspond with the next frame's number.
-    //                     let frame_number = self.regs.dsts().read().fnsof();
-    //                     let frame_is_odd = frame_number & 0x01 == 1;
-
-    //                     self.regs.doepctl(index).modify(|r| {
-    //                         if frame_is_odd {
-    //                             r.set_sd0pid_sevnfrm(true);
-    //                         } else {
-    //                             r.set_sd1pid_soddfrm(true);
-    //                         }
-    //                     });
-    //                 }
-
-    //                 // Clear NAK to indicate we are ready to receive more data
-    //                 self.regs.doepctl(index).modify(|w| {
-    //                     w.set_cnak(true);
-    //                 });
-    //             });
-
-    //             Poll::Ready(Ok(len as usize))
-    //         } else {
-    //             Poll::Pending
-    //         }
-    //     })
-    //     .await
-    // }
 }
 
 impl<'d> embassy_usb_driver::EndpointIn for Endpoint<'d, In> {
@@ -1549,31 +1470,31 @@ impl<'d> embassy_usb_driver::EndpointIn for Endpoint<'d, In> {
         })
         .await?;
 
-        if buf.len() > 0 {
-            poll_fn(|cx| {
-                self.state.in_waker.register(cx.waker());
+        // if buf.len() > 0 {
+        //     poll_fn(|cx| {
+        //         self.state.in_waker.register(cx.waker());
 
-                let size_words = (buf.len() + 3) / 4;
+        //         let size_words = (buf.len() + 3) / 4;
 
-                let fifo_space = self.regs.dtxfsts(index).read().ineptfsav() as usize;
-                if size_words > fifo_space {
-                    // Not enough space in fifo, enable tx fifo empty interrupt
-                    critical_section::with(|_| {
-                        self.regs.diepempmsk().modify(|w| {
-                            w.set_ineptxfem(w.ineptxfem() | (1 << index));
-                        });
-                    });
+        //         let fifo_space = self.regs.dtxfsts(index).read().ineptfsav() as usize;
+        //         if size_words > fifo_space {
+        //             // Not enough space in fifo, enable tx fifo empty interrupt
+        //             critical_section::with(|_| {
+        //                 self.regs.diepempmsk().modify(|w| {
+        //                     w.set_ineptxfem(w.ineptxfem() | (1 << index));
+        //                 });
+        //             });
 
-                    trace!("tx fifo for ep={} full, waiting for txfe", index);
+        //             trace!("tx fifo for ep={} full, waiting for txfe", index);
 
-                    Poll::Pending
-                } else {
-                    trace!("write ep={:?} wait for fifo: ready", self.info.addr);
-                    Poll::Ready(())
-                }
-            })
-            .await
-        }
+        //             Poll::Pending
+        //         } else {
+        //             trace!("write ep={:?} wait for fifo: ready", self.info.addr);
+        //             Poll::Ready(())
+        //         }
+        //     })
+        //     .await
+        // }
 
         // ERRATA: Transmit data FIFO is corrupted when a write sequence to the FIFO is interrupted with
         // accesses to certain OTG_FS registers.
