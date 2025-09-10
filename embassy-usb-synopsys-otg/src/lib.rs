@@ -1470,36 +1470,11 @@ impl<'d> embassy_usb_driver::EndpointIn for Endpoint<'d, In> {
         })
         .await?;
 
-        // if buf.len() > 0 {
-        //     poll_fn(|cx| {
-        //         self.state.in_waker.register(cx.waker());
-
-        //         let size_words = (buf.len() + 3) / 4;
-
-        //         let fifo_space = self.regs.dtxfsts(index).read().ineptfsav() as usize;
-        //         if size_words > fifo_space {
-        //             // Not enough space in fifo, enable tx fifo empty interrupt
-        //             critical_section::with(|_| {
-        //                 self.regs.diepempmsk().modify(|w| {
-        //                     w.set_ineptxfem(w.ineptxfem() | (1 << index));
-        //                 });
-        //             });
-
-        //             trace!("tx fifo for ep={} full, waiting for txfe", index);
-
-        //             Poll::Pending
-        //         } else {
-        //             trace!("write ep={:?} wait for fifo: ready", self.info.addr);
-        //             Poll::Ready(())
-        //         }
-        //     })
-        //     .await
-        // }
-
         // ERRATA: Transmit data FIFO is corrupted when a write sequence to the FIFO is interrupted with
         // accesses to certain OTG_FS registers.
         //
         // Prevent the interrupt (which might poke FIFOs) from executing while copying data to FIFOs.
+        // TODO(goodhoko): do we still need critical section with DMA?
         critical_section::with(|_| {
             // Setup transfer size
             self.regs.dieptsiz(index).write(|w| {
@@ -1531,26 +1506,7 @@ impl<'d> embassy_usb_driver::EndpointIn for Endpoint<'d, In> {
                 w.set_cnak(true);
                 w.set_epena(true);
             });
-
-            // // Write data to FIFO
-            // let fifo = self.regs.fifo(index);
-            // let mut chunks = buf.chunks_exact(4);
-            // for chunk in &mut chunks {
-            //     let val = u32::from_ne_bytes(chunk.try_into().unwrap());
-            //     fifo.write_value(regs::Fifo(val));
-            // }
-            // // Write any last chunk
-            // let rem = chunks.remainder();
-            // if !rem.is_empty() {
-            //     let mut tmp = [0u8; 4];
-            //     tmp[0..rem.len()].copy_from_slice(rem);
-            //     let tmp = u32::from_ne_bytes(tmp);
-            //     fifo.write_value(regs::Fifo(tmp));
-            // }
         });
-
-        // TODO(bschwind) - use poll_fn here, register the state's waker, and don't return
-        //                  until the DMA transfer is done.
 
         poll_fn(|cx| {
             self.state.in_waker.register(cx.waker());
