@@ -8,8 +8,8 @@ mod fmt;
 
 use crate::regs::Diepint;
 use crate::regs::Doepint;
-use crate::regs::Grxsts;
 use crate::regs::Gintsts;
+use crate::regs::Grxsts;
 use core::cell::UnsafeCell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
@@ -185,7 +185,8 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
     }
 
     // Handle RX
-    while false { //r.gintsts().read().rxflvl() && !r.gintmsk().read().rxflvlm() {
+    while false {
+        //r.gintsts().read().rxflvl() && !r.gintmsk().read().rxflvlm() {
         // Pops the top data entry out of the Rx FIFO
         let status = r.grxstsp().read();
 
@@ -331,7 +332,8 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
                     assert!(ep_num == 0);
 
                     // Reset the DMA address for our setup buffer
-                    r.doepdma(ep_num).write_value(state.cp_state.setup_buffer.as_ptr() as u32);
+                    r.doepdma(ep_num)
+                        .write_value(state.cp_state.setup_buffer.as_ptr() as u32);
 
                     state.cp_state.setup_ready.store(true, Ordering::Release);
                 }
@@ -832,14 +834,11 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
             w.set_epdm(true);
         });
 
-
-
         // USBx_DEVICE->DOEPMSK |= USB_OTG_DOEPMSK_STUPM |
         //                                                 USB_OTG_DOEPMSK_XFRCM |
         //                                                 USB_OTG_DOEPMSK_EPDM |
         //                                                 USB_OTG_DOEPMSK_OTEPSPRM |
         //                                                 USB_OTG_DOEPMSK_NAKM;
-
 
         // Unmask SETUP received EP interrupt
         r.doepmsk().write(|w| {
@@ -874,8 +873,6 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
             //                  Also set RXTHREN to true
             //                  Also set NONISOTHREN to true
 
-
-
             // More info for endpoint 0:
             //     Bit 15 STPKTRX: Setup packet received
             // Applicable for control OUT endpoints in only in the Buffer DMA Mode. Set by the OTG_HS,
@@ -888,14 +885,11 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
             // address. Because of the above behavior, OTG_HS can receive any number of back to back
             // setup packets and one buffer for every setup packet is used.
 
-
             w.set_gint(true); // unmask global interrupt
         });
 
         // Connect
-        r.dctl().write(|w| {
-            w.set_sdis(false)
-        });
+        r.dctl().write(|w| w.set_sdis(false));
     }
 
     fn init_fifo(&mut self) {
@@ -1021,7 +1015,8 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
 
                     if index == 0 {
                         // TODO(bschwind) - Self should probably be in `Pin<>` so that it doesn't move.
-                        regs.doepdma(index).write_value(self.instance.state.cp_state.setup_buffer.as_ptr() as u32);
+                        regs.doepdma(index)
+                            .write_value(self.instance.state.cp_state.setup_buffer.as_ptr() as u32);
 
                         // Probably not needed, but enable the endpoint
                         regs.doepctl(0).modify(|w| {
@@ -1402,10 +1397,6 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
 
             // TODO - set the dma address depending on if it's control 0 endpoint, or another endpoint
             //        make the Future progress by checking some AtomicBool on the state, or a register
-
-
-
-
 
             // let len = self.state.out_size.load(Ordering::Relaxed);
             // if len != EP_OUT_BUFFER_EMPTY {
