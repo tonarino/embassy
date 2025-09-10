@@ -1397,7 +1397,7 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
         }
 
         // 1. Configure the packet count and transfer size to "enable" the EP
-        let packet_count = (buf.len() as u32).div_ceil(self.info.max_packet_size as u32);
+        let packet_count = (buf.len() as u32 / self.info.max_packet_size as u32).max(1);
         self.regs.doeptsiz(index).modify(|w| {
             w.set_xfrsiz(buf.len() as u32);
             w.set_pktcnt(packet_count as u16);
