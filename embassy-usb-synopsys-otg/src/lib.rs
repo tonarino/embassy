@@ -307,7 +307,13 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
                     state.ep_states[ep_num].out_transfer_done.store(true, Ordering::Relaxed);
 
                     // TODO(goodhoko): check if the xfrsiz holds the number of bytes transferred or it is whatever the number after subtracting the number of transferred bytes.
-                    let bytes_read = r.doeptsiz(ep_num).read().xfrsiz();
+                    let remaining_bytes = r.doeptsiz(ep_num).read().xfrsiz();
+
+                    let bytes_read = state.ep_states[ep_num]
+                        .out_transfer_requested_bytes
+                        .load(Ordering::Relaxed)
+                        - remaining_bytes as usize;
+
                     state.ep_states[ep_num]
                         .out_transfered_bytes
                         .store(bytes_read as usize, Ordering::Relaxed);
@@ -380,7 +386,9 @@ struct EpState {
     out_buffer: UnsafeCell<*mut u8>,
     out_size: AtomicU16,
     in_transfer_done: AtomicBool,
+
     out_transfer_done: AtomicBool,
+    out_transfer_requested_bytes: AtomicUsize,
     out_transfered_bytes: AtomicUsize,
 }
 
@@ -426,6 +434,7 @@ impl<const EP_COUNT: usize> State<EP_COUNT> {
                     out_size: AtomicU16::new(EP_OUT_BUFFER_EMPTY),
                     in_transfer_done: AtomicBool::new(true),
                     out_transfer_done: AtomicBool::new(true),
+                    out_transfer_requested_bytes: AtomicUsize::new(0),
                     out_transfered_bytes: AtomicUsize::new(0),
                 }
             }; EP_COUNT],
@@ -1355,7 +1364,8 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
         }
 
         // 1. Configure the packet count and transfer size to "enable" the EP
-        let packet_count = (buf.len() as u32 / self.info.max_packet_size as u32).max(1);
+        let packet_count =
+            ((buf.len() as u32 + self.info.max_packet_size as u32 - 1) / self.info.max_packet_size as u32).max(1);
         self.regs.doeptsiz(index).modify(|w| {
             w.set_xfrsiz(buf.len() as u32);
             w.set_pktcnt(packet_count as u16);
@@ -1372,6 +1382,9 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
 
         info!("marking OUT transfer on EP#{} as NOT done", index);
         self.state.out_transfer_done.store(false, Ordering::Relaxed);
+        self.state
+            .out_transfer_requested_bytes
+            .store(buf.len(), Ordering::Relaxed);
 
         // Enable the endpoint in case it was disabled.
         self.regs.doepctl(index).modify(|w| {
