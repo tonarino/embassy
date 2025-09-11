@@ -44,7 +44,7 @@ macro_rules! config_ulpi_pins {
 // This calculation doesn't correspond to one in a Reference Manual.
 // In fact, the required number of words is higher than indicated in RM.
 // The following numbers are pessimistic and were figured out empirically.
-const RX_FIFO_EXTRA_SIZE_WORDS: u16 = 30;
+const RX_FIFO_EXTRA_SIZE_WORDS: u16 = 256;
 
 /// USB driver.
 pub struct Driver<'d, T: Instance> {
