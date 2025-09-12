@@ -258,7 +258,6 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
 
                 if ep_ints.stup() {
                     info!("rxdpid_stupcnt: {}", r.doeptsiz(ep_num).read().rxdpid_stupcnt());
-                    info!("setup buffer: {}", Bytes(u32_to_u8(&state.cp_state.setup_data)));
 
                     assert!(ep_num == 0);
 
@@ -267,11 +266,17 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
                     // address before enabling the EP again in `ControlPipe::setup()`.
                     r.doepdma(ep_num).write_value(state.cp_state.setup_data.as_ptr() as u32);
 
-                    // Setup packet arrived. Let future in setup() know.
                     if !state.cp_state.awaiting_setup_packet.load(Ordering::Relaxed) {
+                        // TODO(goodhoko): host can send "back to back" SETUP packets. In that
+                        // case any previous control transactions should be aborted and only
+                        // the last SETUP packet should be considered. (That's also why the data
+                        // sheet asks for a space for up to 3 SETUP packets.) When that happens
+                        // we should hit this condition. How do we then let the ControlPipe logic
+                        // know?
                         error!("Received a SETUP packet but there's no future to process it");
                     }
 
+                    // Setup packet arrived. Let future in setup() know.
                     state.cp_state.awaiting_setup_packet.store(false, Ordering::Release);
                 } else if ep_ints.xfrc() {
                     if state.ep_states[ep_num].out_transfer_done.load(Ordering::Acquire) {
