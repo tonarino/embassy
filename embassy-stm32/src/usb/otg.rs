@@ -26,7 +26,7 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
     unsafe fn on_interrupt() {
         let r = T::regs();
         let state = T::state();
-        on_interrupt_impl(r, state, T::ENDPOINT_COUNT);
+        on_interrupt_impl(r, state);
     }
 }
 
