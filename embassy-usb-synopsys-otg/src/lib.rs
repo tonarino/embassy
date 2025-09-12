@@ -204,7 +204,6 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
         r.gintmsk().write(|w| {
             w.set_iepint(true);
             w.set_oepint(true);
-            // w.set_rxflvlm(true);
         });
         state.bus_waker.wake();
     }
@@ -218,20 +217,9 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
         while ep_mask != 0 {
             if ep_mask & 1 != 0 {
                 let ep_ints = r.diepint(ep_num).read();
-
                 print_diepint(ep_ints);
-
                 // clear all
                 r.diepint(ep_num).write_value(ep_ints);
-
-                // TXFE is cleared in DIEPEMPMSK
-                // if ep_ints.txfe() {
-                //     critical_section::with(|_| {
-                //         r.diepempmsk().modify(|w| {
-                //             w.set_ineptxfem(w.ineptxfem() & !(1 << ep_num));
-                //         });
-                //     });
-                // }
 
                 if ep_ints.xfrc() {
                     if state.ep_states[ep_num].in_transfer_done.load(Ordering::Acquire) {
@@ -264,17 +252,11 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
         while ep_mask != 0 {
             if ep_mask & 1 != 0 {
                 let ep_ints = r.doepint(ep_num).read();
-
                 print_doepint(ep_ints);
-
                 // clear all
                 r.doepint(ep_num).write_value(ep_ints);
 
                 if ep_ints.stup() {
-                    // TODO - read the setup data here
-                    // let data = &state.cp_state.setup_data;
-                    // data[0].store(r.fifo(0).read().data(), Ordering::Relaxed);
-                    // data[1].store(r.fifo(0).read().data(), Ordering::Relaxed);
                     info!("rxdpid_stupcnt: {}", r.doeptsiz(ep_num).read().rxdpid_stupcnt());
                     info!("setup buffer: {}", Bytes(u32_to_u8(&state.cp_state.setup_buffer)));
 
