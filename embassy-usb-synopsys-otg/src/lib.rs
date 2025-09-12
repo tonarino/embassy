@@ -375,16 +375,12 @@ impl PhyType {
     }
 }
 
-/// Indicates that [State::ep_out_buffers] is empty.
-const EP_OUT_BUFFER_EMPTY: u16 = u16::MAX;
-
 struct EpState {
     in_waker: AtomicWaker,
     out_waker: AtomicWaker,
     /// RX FIFO is shared so extra buffers are needed to dequeue all data without waiting on each endpoint.
     /// Buffers are ready when associated [State::ep_out_size] != [EP_OUT_BUFFER_EMPTY].
     out_buffer: UnsafeCell<*mut u8>,
-    out_size: AtomicU16,
     in_transfer_done: AtomicBool,
 
     out_transfer_done: AtomicBool,
@@ -431,7 +427,6 @@ impl<const EP_COUNT: usize> State<EP_COUNT> {
                     in_waker: AtomicWaker::new(),
                     out_waker: AtomicWaker::new(),
                     out_buffer: UnsafeCell::new(0 as _),
-                    out_size: AtomicU16::new(EP_OUT_BUFFER_EMPTY),
                     in_transfer_done: AtomicBool::new(true),
                     out_transfer_done: AtomicBool::new(true),
                     out_transfer_requested_bytes: AtomicUsize::new(0),
@@ -1399,7 +1394,7 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
                 let bytes_read = self.state.out_transfered_bytes.load(Ordering::Acquire);
                 self.state.out_transfered_bytes.store(0, Ordering::Relaxed);
 
-                return Poll::Ready(Ok(bytes_read));
+                Poll::Ready(Ok(bytes_read))
             } else {
                 Poll::Pending
             }
