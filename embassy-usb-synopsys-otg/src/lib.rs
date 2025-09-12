@@ -10,11 +10,10 @@ use crate::regs::Diepint;
 use crate::regs::Doepint;
 use crate::regs::Gintsts;
 use crate::regs::Grxsts;
-use core::cell::UnsafeCell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::sync::atomic::AtomicUsize;
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::task::Poll;
 
 use embassy_sync::waitqueue::AtomicWaker;
@@ -378,9 +377,7 @@ impl PhyType {
 struct EpState {
     in_waker: AtomicWaker,
     out_waker: AtomicWaker,
-    /// RX FIFO is shared so extra buffers are needed to dequeue all data without waiting on each endpoint.
-    /// Buffers are ready when associated [State::ep_out_size] != [EP_OUT_BUFFER_EMPTY].
-    out_buffer: UnsafeCell<*mut u8>,
+
     in_transfer_done: AtomicBool,
 
     out_transfer_done: AtomicBool,
@@ -426,7 +423,6 @@ impl<const EP_COUNT: usize> State<EP_COUNT> {
                 EpState {
                     in_waker: AtomicWaker::new(),
                     out_waker: AtomicWaker::new(),
-                    out_buffer: UnsafeCell::new(0 as _),
                     in_transfer_done: AtomicBool::new(true),
                     out_transfer_done: AtomicBool::new(true),
                     out_transfer_requested_bytes: AtomicUsize::new(0),
@@ -488,8 +484,6 @@ pub struct Driver<'d, const MAX_EP_COUNT: usize> {
     config: Config,
     ep_in: [Option<EndpointData>; MAX_EP_COUNT],
     ep_out: [Option<EndpointData>; MAX_EP_COUNT],
-    ep_out_buffer: &'d mut [u8],
-    ep_out_buffer_offset: usize,
     instance: OtgInstance<'d, MAX_EP_COUNT>,
 }
 
@@ -498,18 +492,13 @@ impl<'d, const MAX_EP_COUNT: usize> Driver<'d, MAX_EP_COUNT> {
     ///
     /// # Arguments
     ///
-    /// * `ep_out_buffer` - An internal buffer used to temporarily store received packets.
-    /// Must be large enough to fit all OUT endpoint max packet sizes.
-    /// Endpoint allocation will fail if it is too small.
     /// * `instance` - The USB OTG peripheral instance and its configuration.
     /// * `config` - The USB driver configuration.
-    pub fn new(ep_out_buffer: &'d mut [u8], instance: OtgInstance<'d, MAX_EP_COUNT>, config: Config) -> Self {
+    pub fn new(instance: OtgInstance<'d, MAX_EP_COUNT>, config: Config) -> Self {
         Self {
             config,
             ep_in: [None; MAX_EP_COUNT],
             ep_out: [None; MAX_EP_COUNT],
-            ep_out_buffer,
-            ep_out_buffer_offset: 0,
             instance,
         }
     }
@@ -534,13 +523,6 @@ impl<'d, const MAX_EP_COUNT: usize> Driver<'d, MAX_EP_COUNT> {
             interval_ms,
             D::dir()
         );
-
-        if D::dir() == Direction::Out {
-            if self.ep_out_buffer_offset + max_packet_size as usize > self.ep_out_buffer.len() {
-                error!("Not enough endpoint out buffer capacity");
-                return Err(EndpointAllocError);
-            }
-        };
 
         let fifo_size_words = match D::dir() {
             Direction::Out => (max_packet_size + 3) / 4,
@@ -602,13 +584,6 @@ impl<'d, const MAX_EP_COUNT: usize> Driver<'d, MAX_EP_COUNT> {
         trace!("  index={}", index);
 
         let state = &self.instance.state.ep_states[index];
-        if D::dir() == Direction::Out {
-            // Buffer capacity check was done above, now allocation cannot fail
-            unsafe {
-                *state.out_buffer.get() = self.ep_out_buffer.as_mut_ptr().offset(self.ep_out_buffer_offset as _);
-            }
-            self.ep_out_buffer_offset += max_packet_size as usize;
-        }
 
         Ok(Endpoint {
             _phantom: PhantomData,
