@@ -193,7 +193,7 @@ fn print_diepint(reg: Diepint) {
 }
 
 /// Handle interrupts.
-pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_EP_COUNT>, ep_count: usize) {
+pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_EP_COUNT>) {
     trace!("irq");
 
     let ints = r.gintsts().read();
@@ -305,7 +305,6 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
                     info!("marking OUT transfer on EP#{} as done", ep_num);
                     state.ep_states[ep_num].out_transfer_done.store(true, Ordering::Relaxed);
 
-                    // TODO(goodhoko): check if the xfrsiz holds the number of bytes transferred or it is whatever the number after subtracting the number of transferred bytes.
                     let remaining_bytes = r.doeptsiz(ep_num).read().xfrsiz();
 
                     let bytes_read = state.ep_states[ep_num]
