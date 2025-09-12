@@ -291,7 +291,7 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
                         - remaining_bytes as usize;
 
                     state.ep_states[ep_num]
-                        .out_transfered_bytes
+                        .out_transferred_bytes
                         .store(bytes_read as usize, Ordering::Relaxed);
 
                     trace!("out ep={} transfer complete, {} bytes read", ep_num, bytes_read);
@@ -359,7 +359,7 @@ struct EpState {
 
     out_transfer_done: AtomicBool,
     out_transfer_requested_bytes: AtomicUsize,
-    out_transfered_bytes: AtomicUsize,
+    out_transferred_bytes: AtomicUsize,
 }
 
 // SAFETY: The EndpointAllocator ensures that the buffer points to valid memory exclusive for each endpoint and is
@@ -403,7 +403,7 @@ impl<const EP_COUNT: usize> State<EP_COUNT> {
                     in_transfer_done: AtomicBool::new(true),
                     out_transfer_done: AtomicBool::new(true),
                     out_transfer_requested_bytes: AtomicUsize::new(0),
-                    out_transfered_bytes: AtomicUsize::new(0),
+                    out_transferred_bytes: AtomicUsize::new(0),
                 }
             }; EP_COUNT],
             bus_waker: AtomicWaker::new(),
@@ -1343,8 +1343,8 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
             self.state.out_waker.register(cx.waker());
 
             if self.state.out_transfer_done.load(Ordering::Acquire) {
-                let bytes_read = self.state.out_transfered_bytes.load(Ordering::Acquire);
-                self.state.out_transfered_bytes.store(0, Ordering::Relaxed);
+                let bytes_read = self.state.out_transferred_bytes.load(Ordering::Acquire);
+                self.state.out_transferred_bytes.store(0, Ordering::Relaxed);
 
                 Poll::Ready(Ok(bytes_read))
             } else {
