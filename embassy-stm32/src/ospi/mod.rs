@@ -1255,16 +1255,18 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
             .cr()
             .modify(|v| v.set_fmode(vals::FunctionalMode::INDIRECT_WRITE));
 
-        let transfer = unsafe {
-            self.dma
-                .as_mut()
-                .unwrap()
-                .write(buf, T::REGS.dr().as_ptr() as *mut W, Default::default())
-        };
+        for chunk in buf.chunks(0xFFFF) {
+            let transfer = unsafe {
+                self.dma
+                    .as_mut()
+                    .unwrap()
+                    .write(chunk, T::REGS.dr().as_ptr() as *mut W, Default::default())
+            };
 
-        T::REGS.cr().modify(|w| w.set_dmaen(true));
+            T::REGS.cr().modify(|w| w.set_dmaen(true));
 
-        transfer.await;
+            transfer.await;
+        }
 
         finish_dma(T::REGS);
 
