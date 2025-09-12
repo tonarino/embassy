@@ -258,18 +258,14 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
 
                 if ep_ints.stup() {
                     info!("rxdpid_stupcnt: {}", r.doeptsiz(ep_num).read().rxdpid_stupcnt());
-                    info!("setup buffer: {}", Bytes(u32_to_u8(&state.cp_state.setup_buffer)));
+                    info!("setup buffer: {}", Bytes(u32_to_u8(&state.cp_state.setup_data)));
 
-                    let data: &[AtomicU32; 2] = &state.cp_state.setup_data;
-                    data[0].store(state.cp_state.setup_buffer[0], Ordering::Relaxed);
-                    data[1].store(state.cp_state.setup_buffer[1], Ordering::Relaxed);
-
-                    // TODO - reset the DMA address for endpoint 0
                     assert!(ep_num == 0);
 
                     // Reset the DMA address for our setup buffer
-                    r.doepdma(ep_num)
-                        .write_value(state.cp_state.setup_buffer.as_ptr() as u32);
+                    // TODO(goodhoko): this shouldn't be needed. We should instead reset the
+                    // address before enabling the EP again in `ControlPipe::setup()`.
+                    r.doepdma(ep_num).write_value(state.cp_state.setup_data.as_ptr() as u32);
 
                     // Setup packet arrived. Let future in setup() know.
                     if !state.cp_state.awaiting_setup_packet.load(Ordering::Relaxed) {
@@ -374,10 +370,7 @@ unsafe impl Sync for EpState {}
 
 struct ControlPipeSetupState {
     /// Holds received SETUP packets. Available if [Ep0State::setup_ready] is true.
-    //TODO(goodhoko): we DMA to setup_buffer and then copy to setup_data only to read it from there and return from `setup()`
-    // Get rid of setup_data and read and return direcrtly from setup_buffer.
-    setup_data: [AtomicU32; 2],
-    setup_buffer: [u32; 12],
+    setup_data: [u32; 12],
     awaiting_setup_packet: AtomicBool,
 }
 
@@ -396,8 +389,11 @@ impl<const EP_COUNT: usize> State<EP_COUNT> {
     pub const fn new() -> Self {
         Self {
             cp_state: ControlPipeSetupState {
-                setup_data: [const { AtomicU32::new(0) }; 2],
-                setup_buffer: [0; 12],
+                // TODO(goodhoko): how many bytes do we *actually* need for setup packets?
+                // We ever only read two words (8 bytes) at a time from this buffer i.e. one SETUP
+                // packet. The data sheet however asks to allocate at least 3 SETUP packets worth of
+                // space???
+                setup_data: [0; 12],
                 awaiting_setup_packet: AtomicBool::new(false),
             },
             ep_states: [const {
@@ -957,7 +953,7 @@ impl<'d, const MAX_EP_COUNT: usize> Bus<'d, MAX_EP_COUNT> {
                     if index == 0 {
                         // TODO(bschwind) - Self should probably be in `Pin<>` so that it doesn't move.
                         regs.doepdma(index)
-                            .write_value(self.instance.state.cp_state.setup_buffer.as_ptr() as u32);
+                            .write_value(self.instance.state.cp_state.setup_data.as_ptr() as u32);
 
                         // Probably not needed, but enable the endpoint
                         regs.doepctl(0).modify(|w| {
@@ -1469,7 +1465,7 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
 
         self.regs
             .doepdma(self.ep_out.info.addr.index())
-            .write_value(self.setup_state.setup_buffer.as_ptr() as u32);
+            .write_value(self.setup_state.setup_data.as_ptr() as u32);
 
         self.setup_state.awaiting_setup_packet.store(true, Ordering::Release);
         self.regs.doepctl(self.ep_out.info.addr.index()).modify(|w| {
@@ -1483,10 +1479,8 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
 
             if !self.setup_state.awaiting_setup_packet.load(Ordering::Relaxed) {
                 let mut data = [0; 8];
-                data[0..4].copy_from_slice(&self.setup_state.setup_data[0].load(Ordering::Relaxed).to_ne_bytes());
-                data[4..8].copy_from_slice(&self.setup_state.setup_data[1].load(Ordering::Relaxed).to_ne_bytes());
-
-                info!("Set data from setup_data!");
+                data[0..4].copy_from_slice(&self.setup_state.setup_data[0].to_ne_bytes());
+                data[4..8].copy_from_slice(&self.setup_state.setup_data[1].to_ne_bytes());
 
                 // EP0 should not be controlled by `Bus` so this RMW does not need a critical section
                 self.regs.doeptsiz(self.ep_out.info.addr.index()).modify(|w| {
