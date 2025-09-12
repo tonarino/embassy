@@ -113,7 +113,7 @@ pub struct TransferConfig {
 
     /// Data width (DMODE)
     pub dwidth: OspiWidth,
-    /// Data buffer
+    /// Data Double Transfer rate enable
     pub ddtr: bool,
 
     /// Number of dummy cycles (DCYC)
@@ -491,7 +491,7 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
             w.set_sioo(command.sioo);
         });
 
-        // Set informationrequired to initiate transaction
+        // Set information required to initiate transaction
         if let Some(instruction) = command.instruction {
             if let Some(address) = command.address {
                 T::REGS.ir().write(|v| {
