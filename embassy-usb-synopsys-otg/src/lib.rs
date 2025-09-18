@@ -9,11 +9,10 @@ mod fmt;
 use crate::regs::Diepint;
 use crate::regs::Doepint;
 use crate::regs::Gintsts;
-use crate::regs::Grxsts;
 use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::sync::atomic::AtomicUsize;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
 
 use embassy_sync::waitqueue::AtomicWaker;
@@ -134,16 +133,6 @@ fn print_interrupts(ints: Gintsts) {
     if ints.wkupint() {
         info!("\tResume/remote wakeup detected interrupt");
     }
-}
-
-fn print_rx_status(status: Grxsts) {
-    info!("RX Status:");
-
-    info!("\tEndpoint number: {}", status.epnum());
-    info!("\tByte count: {}", status.bcnt());
-    info!("\tData packet ID: {}", status.dpid() as u8);
-    info!("\tPacket status: {}", status.pktstsd() as u8);
-    info!("\tFrame number: {}", status.frmnum());
 }
 
 fn print_doepint(reg: Doepint) {
@@ -1612,10 +1601,4 @@ pub struct OtgInstance<'d, const MAX_EP_COUNT: usize> {
     pub extra_rx_fifo_words: u16,
     /// Function to calculate TRDT value based on some internal clock speed.
     pub calculate_trdt_fn: fn(speed: vals::Dspd) -> u8,
-}
-
-fn u32_to_u8(arr: &[u32]) -> &[u8] {
-    let len = 4 * arr.len();
-    let ptr = arr.as_ptr() as *const u8;
-    unsafe { core::slice::from_raw_parts(ptr, len) }
 }
