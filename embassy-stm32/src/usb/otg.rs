@@ -26,7 +26,7 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
     unsafe fn on_interrupt() {
         let r = T::regs();
         let state = T::state();
-        on_interrupt_impl(r, state, T::ENDPOINT_COUNT);
+        on_interrupt_impl(r, state);
     }
 }
 
@@ -44,7 +44,7 @@ macro_rules! config_ulpi_pins {
 // This calculation doesn't correspond to one in a Reference Manual.
 // In fact, the required number of words is higher than indicated in RM.
 // The following numbers are pessimistic and were figured out empirically.
-const RX_FIFO_EXTRA_SIZE_WORDS: u16 = 30;
+const RX_FIFO_EXTRA_SIZE_WORDS: u16 = 256;
 
 /// USB driver.
 pub struct Driver<'d, T: Instance> {
@@ -54,18 +54,11 @@ pub struct Driver<'d, T: Instance> {
 
 impl<'d, T: Instance> Driver<'d, T> {
     /// Initializes USB OTG peripheral with internal Full-Speed PHY.
-    ///
-    /// # Arguments
-    ///
-    /// * `ep_out_buffer` - An internal buffer used to temporarily store received packets.
-    /// Must be large enough to fit all OUT endpoint max packet sizes.
-    /// Endpoint allocation will fail if it is too small.
     pub fn new_fs(
         _peri: Peri<'d, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         dp: Peri<'d, impl DpPin<T>>,
         dm: Peri<'d, impl DmPin<T>>,
-        ep_out_buffer: &'d mut [u8],
         config: Config,
     ) -> Self {
         set_as_af!(dp, AfType::output(OutputType::PushPull, Speed::VeryHigh));
@@ -84,24 +77,17 @@ impl<'d, T: Instance> Driver<'d, T> {
         };
 
         Self {
-            inner: OtgDriver::new(ep_out_buffer, instance, config),
+            inner: OtgDriver::new(instance, config),
             phantom: PhantomData,
         }
     }
 
     /// Initializes USB OTG peripheral with internal High-Speed PHY.
-    ///
-    /// # Arguments
-    ///
-    /// * `ep_out_buffer` - An internal buffer used to temporarily store received packets.
-    /// Must be large enough to fit all OUT endpoint max packet sizes.
-    /// Endpoint allocation will fail if it is too small.
     pub fn new_hs(
         _peri: Peri<'d, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         _dp: Peri<'d, impl DpPin<T>>,
         _dm: Peri<'d, impl DmPin<T>>,
-        ep_out_buffer: &'d mut [u8],
         config: Config,
     ) -> Self {
         // For STM32U5 High speed pins need to be left in analog mode
@@ -122,18 +108,12 @@ impl<'d, T: Instance> Driver<'d, T> {
         };
 
         Self {
-            inner: OtgDriver::new(ep_out_buffer, instance, config),
+            inner: OtgDriver::new(instance, config),
             phantom: PhantomData,
         }
     }
 
     /// Initializes USB OTG peripheral with external Full-speed PHY (usually, a High-speed PHY in Full-speed mode).
-    ///
-    /// # Arguments
-    ///
-    /// * `ep_out_buffer` - An internal buffer used to temporarily store received packets.
-    /// Must be large enough to fit all OUT endpoint max packet sizes.
-    /// Endpoint allocation will fail if it is too small.
     pub fn new_fs_ulpi(
         _peri: Peri<'d, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
@@ -149,7 +129,6 @@ impl<'d, T: Instance> Driver<'d, T> {
         ulpi_d5: Peri<'d, impl UlpiD5Pin<T>>,
         ulpi_d6: Peri<'d, impl UlpiD6Pin<T>>,
         ulpi_d7: Peri<'d, impl UlpiD7Pin<T>>,
-        ep_out_buffer: &'d mut [u8],
         config: Config,
     ) -> Self {
         config_ulpi_pins!(
@@ -168,18 +147,12 @@ impl<'d, T: Instance> Driver<'d, T> {
         };
 
         Self {
-            inner: OtgDriver::new(ep_out_buffer, instance, config),
+            inner: OtgDriver::new(instance, config),
             phantom: PhantomData,
         }
     }
 
     /// Initializes USB OTG peripheral with external High-Speed PHY.
-    ///
-    /// # Arguments
-    ///
-    /// * `ep_out_buffer` - An internal buffer used to temporarily store received packets.
-    /// Must be large enough to fit all OUT endpoint max packet sizes.
-    /// Endpoint allocation will fail if it is too small.
     pub fn new_hs_ulpi(
         _peri: Peri<'d, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
@@ -195,7 +168,6 @@ impl<'d, T: Instance> Driver<'d, T> {
         ulpi_d5: Peri<'d, impl UlpiD5Pin<T>>,
         ulpi_d6: Peri<'d, impl UlpiD6Pin<T>>,
         ulpi_d7: Peri<'d, impl UlpiD7Pin<T>>,
-        ep_out_buffer: &'d mut [u8],
         config: Config,
     ) -> Self {
         assert!(T::HIGH_SPEED == true, "Peripheral is not capable of high-speed USB");
@@ -216,7 +188,7 @@ impl<'d, T: Instance> Driver<'d, T> {
         };
 
         Self {
-            inner: OtgDriver::new(ep_out_buffer, instance, config),
+            inner: OtgDriver::new(instance, config),
             phantom: PhantomData,
         }
     }
