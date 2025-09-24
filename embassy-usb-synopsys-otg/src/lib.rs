@@ -6,13 +6,9 @@
 // This must go FIRST so that all the other modules see its macros.
 mod fmt;
 
-use crate::regs::Diepint;
-use crate::regs::Doepint;
-use crate::regs::Gintsts;
 use core::future::poll_fn;
 use core::marker::PhantomData;
-use core::sync::atomic::AtomicUsize;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::task::Poll;
 
 use embassy_sync::waitqueue::AtomicWaker;
@@ -27,166 +23,11 @@ pub mod otg_v1;
 
 use otg_v1::{regs, vals, Otg};
 
-fn print_interrupts(ints: Gintsts) {
-    if ints.0 == 0 {
-        return;
-    }
-
-    info!("USB interrupts:");
-
-    if ints.mmis() {
-        info!("\tMode mismatch interrupt");
-    }
-
-    if ints.otgint() {
-        info!("\tOTG interrupt");
-    }
-
-    if ints.sof() {
-        info!("\tStart of frame interrupt");
-    }
-
-    if ints.rxflvl() {
-        info!("\tRxFIFO non-empty interrupt");
-    }
-
-    if ints.nptxfe() {
-        info!("\tNon-periodic TxFIFO empty interrupt");
-    }
-
-    if ints.ginakeff() {
-        info!("\tGlobal IN non-periodic NAK effective interrupt");
-    }
-
-    if ints.goutnakeff() {
-        info!("\tGlobal OUT NAK effective interrupt");
-    }
-
-    if ints.esusp() {
-        info!("\tEarly suspend interrupt");
-    }
-
-    if ints.usbsusp() {
-        info!("\tUSB suspend interrupt");
-    }
-
-    if ints.usbrst() {
-        info!("\tUSB reset interrupt");
-    }
-
-    if ints.enumdne() {
-        info!("\tEnumeration done interrupt");
-    }
-
-    if ints.isoodrp() {
-        info!("\tIsochronous OUT packet dropped interrupt");
-    }
-
-    if ints.eopf() {
-        info!("\tEnd of periodic frame interrupt");
-    }
-
-    if ints.iepint() {
-        info!("\tIN endpoint interrupt");
-    }
-
-    if ints.oepint() {
-        info!("\tOUT endpoint interrupt");
-    }
-
-    if ints.iisoixfr() {
-        info!("\tIncomplete isochronous IN transfer interrupt");
-    }
-
-    if ints.ipxfr_incompisoout() {
-        info!("\tIncomplete periodic transfer (host mode) / Incomplete isochronous OUT transfer (device mode)");
-    }
-
-    if ints.datafsusp() {
-        info!("\tData fetch suspended");
-    }
-
-    if ints.hprtint() {
-        info!("\tHost port interrupt");
-    }
-
-    if ints.hcint() {
-        info!("\tHost channels interrupt");
-    }
-
-    if ints.ptxfe() {
-        info!("\tPeriodic TxFIFO empty interrupt");
-    }
-
-    if ints.cidschg() {
-        info!("\tConnector ID status change interrupt");
-    }
-
-    if ints.discint() {
-        info!("\tDisconnect detected interrupt");
-    }
-
-    if ints.srqint() {
-        info!("\tSession request/new session detected interrupt");
-    }
-
-    if ints.wkupint() {
-        info!("\tResume/remote wakeup detected interrupt");
-    }
-}
-
-fn print_doepint(reg: Doepint) {
-    info!("Doepint Status:");
-
-    if reg.xfrc() {
-        info!("\tTransfer Complete");
-    }
-    if reg.epdisd() {
-        info!("\tEndpoint Disabled");
-    }
-    if reg.stup() {
-        info!("\tSetup");
-    }
-    if reg.otepdis() {
-        info!("\tOUT token received when endpoint disabled");
-    }
-    if reg.b2bstup() {
-        info!("\tBack to back setup");
-    }
-    if reg.stpktrx() {
-        info!("\tSetup Packet Received  ");
-    }
-}
-
-fn print_diepint(reg: Diepint) {
-    info!("Diepint Status:");
-
-    if reg.xfrc() {
-        info!("\tTransfer Complete");
-    }
-    if reg.epdisd() {
-        info!("\tEndpoint Disabled");
-    }
-    if reg.toc() {
-        info!("\tTimeout condition");
-    }
-    if reg.ittxfe() {
-        info!("\tIN token received when Tx FIFO is empty");
-    }
-    if reg.inepne() {
-        info!("\tIN endpoint NAK effective");
-    }
-    if reg.txfe() {
-        info!("\tTX FIFO empty");
-    }
-}
-
 /// Handle interrupts.
 pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_EP_COUNT>) {
     trace!("irq");
 
     let ints = r.gintsts().read();
-    print_interrupts(ints);
 
     if ints.wkupint() || ints.usbsusp() || ints.usbrst() || ints.enumdne() || ints.otgint() || ints.srqint() {
         // Mask interrupts and notify `Bus` to process them
@@ -206,7 +47,6 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
         while ep_mask != 0 {
             if ep_mask & 1 != 0 {
                 let ep_ints = r.diepint(ep_num).read();
-                print_diepint(ep_ints);
                 // clear all
                 r.diepint(ep_num).write_value(ep_ints);
 
@@ -233,7 +73,6 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
 
     // out endpoint interrupt
     if ints.oepint() {
-        info!("oepint");
         let mut ep_mask = r.daint().read().oepint();
         let mut ep_num = 0;
 
@@ -241,13 +80,10 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
         while ep_mask != 0 {
             if ep_mask & 1 != 0 {
                 let ep_ints = r.doepint(ep_num).read();
-                print_doepint(ep_ints);
                 // clear all
                 r.doepint(ep_num).write_value(ep_ints);
 
                 if ep_ints.stup() {
-                    info!("rxdpid_stupcnt: {}", r.doeptsiz(ep_num).read().rxdpid_stupcnt());
-
                     assert!(ep_num == 0);
 
                     // Reset the DMA address for our setup buffer
@@ -274,7 +110,6 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
                             ep_num
                         )
                     }
-                    info!("marking OUT transfer on EP#{} as done", ep_num);
                     state.ep_states[ep_num].out_transfer_done.store(true, Ordering::Relaxed);
 
                     let remaining_bytes = r.doeptsiz(ep_num).read().xfrsiz();
@@ -292,7 +127,6 @@ pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_
                 }
 
                 state.ep_states[ep_num].out_waker.wake();
-                info!("out ep={} irq val={:08x}", ep_num, ep_ints.0);
             }
 
             ep_mask >>= 1;
@@ -1321,7 +1155,6 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
         // Set the destination address of the DMA transfer.
         self.regs.doepdma(index).write_value(buf.as_mut_ptr() as u32);
 
-        info!("marking OUT transfer on EP#{} as NOT done", index);
         self.state.out_transfer_done.store(false, Ordering::Relaxed);
         self.state
             .out_transfer_requested_bytes
@@ -1481,10 +1314,8 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
                     w.set_rxdpid_stupcnt(3);
                 });
 
-                info!("SETUP received: {:?}", Bytes(&data));
                 Poll::Ready(data)
             } else {
-                info!("SETUP waiting");
                 Poll::Pending
             }
         })
