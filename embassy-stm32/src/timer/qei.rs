@@ -31,7 +31,7 @@ impl<'d, T: GeneralInstance4Channel, C: QeiChannel, #[cfg(afio)] A> if_afio!(Qei
     pub fn new(pin: Peri<'d, if_afio!(impl TimerPin<T, C, A>)>) -> Self {
         critical_section::with(|_| {
             pin.set_low();
-            set_as_af!(pin, AfType::input(Pull::None));
+            set_as_af!(pin, AfType::input(Pull::Up));
         });
         QeiPin {
             pin: pin.into(),
