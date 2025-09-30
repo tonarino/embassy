@@ -1147,11 +1147,6 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
         });
 
         // 2. Setup DMA
-        assert_eq!(
-            buf.len() % 4,
-            0,
-            "buffer must be aligned to DMA word-size which is 4 bytes"
-        );
         // Set the destination address of the DMA transfer.
         self.regs.doepdma(index).write_value(buf.as_mut_ptr() as u32);
 
