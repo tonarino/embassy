@@ -1199,7 +1199,8 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
             .modify(|v| v.set_fmode(vals::FunctionalMode::INDIRECT_WRITE));
 
         // TODO: implement this using a LinkedList DMA to offload the whole transfer off the CPU.
-        for chunk in buf.chunks(0xFFFF) {
+        let max_size_bytes = 0xFFFF;
+        for chunk in buf.chunks(max_size_bytes / W::size().bytes()) {
             let transfer = unsafe {
                 self.dma
                     .as_mut()
@@ -1272,7 +1273,8 @@ impl<'d, T: Instance> Ospi<'d, T, Async> {
             .modify(|v| v.set_fmode(vals::FunctionalMode::INDIRECT_WRITE));
 
         // TODO: implement this using a LinkedList DMA to offload the whole transfer off the CPU.
-        for chunk in buf.chunks(0xFFFF) {
+        let max_size_bytes = 0xFFFF;
+        for chunk in buf.chunks(max_size_bytes / W::size().bytes()) {
             let transfer = unsafe {
                 self.dma
                     .as_mut()
