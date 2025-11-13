@@ -24,7 +24,7 @@ pub mod otg_v1;
 use otg_v1::{regs, vals, Otg};
 
 /// Handle interrupts.
-pub unsafe fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_EP_COUNT>) {
+pub fn on_interrupt<const MAX_EP_COUNT: usize>(r: Otg, state: &State<MAX_EP_COUNT>) {
     trace!("irq");
 
     let ints = r.gintsts().read();
