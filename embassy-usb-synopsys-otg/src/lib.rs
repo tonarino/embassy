@@ -190,12 +190,6 @@ struct EpState {
     out_transferred_bytes: AtomicUsize,
 }
 
-// SAFETY: The EndpointAllocator ensures that the buffer points to valid memory exclusive for each endpoint and is
-// large enough to hold the maximum packet size. Access to the buffer is synchronized between the USB interrupt and the
-// EndpointOut impl using the out_size atomic variable.
-unsafe impl Send for EpState {}
-unsafe impl Sync for EpState {}
-
 struct ControlPipeSetupState {
     /// Holds received SETUP packets. Available if [Ep0State::setup_ready] is true.
     setup_data: [u32; 12],
