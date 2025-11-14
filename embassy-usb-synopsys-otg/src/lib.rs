@@ -1320,11 +1320,13 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
 
     async fn data_in(&mut self, data: &[u8], _first: bool, last: bool) -> Result<(), EndpointError> {
         trace!("control: data_in write: {:?}", Bytes(data));
+
         self.ep_in.write(data).await?;
 
         // wait for status response from host after sending the last packet
         if last {
             trace!("control: data_in waiting for status");
+            // TODO(goodhoko): is this setting up the out EP for the status packet too late? i.e. are we missing
             self.ep_out.read(&mut []).await?;
             trace!("control: complete");
         }
