@@ -278,6 +278,8 @@ impl Default for Config {
     }
 }
 
+// TODO(goodhoko): communicate that this driver requires the descriptor, control and other buffers
+// passed in by the users to be word-aligned.
 /// USB OTG driver.
 pub struct Driver<'d, const MAX_EP_COUNT: usize> {
     config: Config,
