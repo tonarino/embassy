@@ -393,6 +393,9 @@ impl<'d, D: Driver<'d>> UsbDevice<'d, D> {
 
     async fn handle_control_out(&mut self, req: Request) {
         let req_length = req.length as usize;
+
+        trace!("handle_control_out: req_length = {}", req_length);
+
         let max_packet_size = self.control.max_packet_size();
         let mut total = 0;
 
@@ -505,6 +508,7 @@ impl<'d, D: Driver<'d>> Inner<'d, D> {
         match (req.request_type, req.recipient) {
             (RequestType::Standard, Recipient::Device) => match (req.request, req.value) {
                 (Request::CLEAR_FEATURE, Request::FEATURE_DEVICE_REMOTE_WAKEUP) => {
+                    trace!("(Request::CLEAR_FEATURE, Request::FEATURE_DEVICE_REMOTE_WAKEUP)");
                     self.remote_wakeup_enabled = false;
                     for h in &mut self.handlers {
                         h.remote_wakeup_enabled(false);
@@ -512,6 +516,7 @@ impl<'d, D: Driver<'d>> Inner<'d, D> {
                     OutResponse::Accepted
                 }
                 (Request::SET_FEATURE, Request::FEATURE_DEVICE_REMOTE_WAKEUP) => {
+                    trace!("(Request::SET_FEATURE, Request::FEATURE_DEVICE_REMOTE_WAKEUP)");
                     self.remote_wakeup_enabled = true;
                     for h in &mut self.handlers {
                         h.remote_wakeup_enabled(true);
@@ -519,6 +524,7 @@ impl<'d, D: Driver<'d>> Inner<'d, D> {
                     OutResponse::Accepted
                 }
                 (Request::SET_ADDRESS, addr @ 1..=127) => {
+                    trace!("(Request::SET_ADDRESS, addr @ 1..=127)");
                     self.address = addr as u8;
                     self.set_address_pending = true;
                     self.device_state = UsbDeviceState::Addressed;
@@ -528,6 +534,7 @@ impl<'d, D: Driver<'d>> Inner<'d, D> {
                     OutResponse::Accepted
                 }
                 (Request::SET_CONFIGURATION, CONFIGURATION_VALUE_U16) => {
+                    trace!("(Request::SET_CONFIGURATION, CONFIGURATION_VALUE_U16)");
                     debug!("SET_CONFIGURATION: configured");
                     self.device_state = UsbDeviceState::Configured;
 
@@ -547,6 +554,7 @@ impl<'d, D: Driver<'d>> Inner<'d, D> {
                     OutResponse::Accepted
                 }
                 (Request::SET_CONFIGURATION, CONFIGURATION_NONE_U16) => {
+                    trace!("(Request::SET_CONFIGURATION, CONFIGURATION_NONE_U16)");
                     if self.device_state != UsbDeviceState::Default {
                         debug!("SET_CONFIGURATION: unconfigured");
                         self.device_state = UsbDeviceState::Addressed;
@@ -567,6 +575,7 @@ impl<'d, D: Driver<'d>> Inner<'d, D> {
                 _ => OutResponse::Rejected,
             },
             (RequestType::Standard, Recipient::Interface) => {
+                trace!("(RequestType::Standard, Recipient::Interface)");
                 let iface_num = InterfaceNumber::new(req.index as _);
                 let Some(iface) = self.interfaces.get_mut(iface_num.0 as usize) else {
                     return OutResponse::Rejected;
@@ -574,6 +583,7 @@ impl<'d, D: Driver<'d>> Inner<'d, D> {
 
                 match req.request {
                     Request::SET_INTERFACE => {
+                        trace!("Request::SET_INTERFACE");
                         let new_altsetting = req.value as u8;
 
                         if new_altsetting >= iface.num_alt_settings {
@@ -604,11 +614,13 @@ impl<'d, D: Driver<'d>> Inner<'d, D> {
             }
             (RequestType::Standard, Recipient::Endpoint) => match (req.request, req.value) {
                 (Request::SET_FEATURE, Request::FEATURE_ENDPOINT_HALT) => {
+                    trace!("(Request::SET_FEATURE, Request::FEATURE_ENDPOINT_HALT)");
                     let ep_addr = ((req.index as u8) & 0x8f).into();
                     self.bus.endpoint_set_stalled(ep_addr, true);
                     OutResponse::Accepted
                 }
                 (Request::CLEAR_FEATURE, Request::FEATURE_ENDPOINT_HALT) => {
+                    trace!("(Request::CLEAR_FEATURE, Request::FEATURE_ENDPOINT_HALT)");
                     let ep_addr = ((req.index as u8) & 0x8f).into();
                     self.bus.endpoint_set_stalled(ep_addr, false);
                     OutResponse::Accepted
